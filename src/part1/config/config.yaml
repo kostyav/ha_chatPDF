@@ -1,0 +1,3 @@
+engine: ollama          # one of: ollama | llamacpp | vllm
+model: gemma:3-1b-it    # engine-specific model name / HF id / path
+quantization: q4_0      # optional: appended to ollama tag, --quantization for vllm, ignored for llamacpp gguf paths

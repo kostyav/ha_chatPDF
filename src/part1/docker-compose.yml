@@ -1,0 +1,38 @@
+services:
+
+  # ── Ollama ──────────────────────────────────────────────────────────────────
+  ollama:
+    profiles: [ollama]
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: [ollama_data:/root/.ollama]
+    environment:
+      MODEL: ${MODEL:-gemma:3-1b-it}
+    entrypoint: >
+      sh -c "ollama serve & sleep 5 && ollama pull $$MODEL && wait"
+
+  # ── llama.cpp server ────────────────────────────────────────────────────────
+  llamacpp:
+    profiles: [llamacpp]
+    image: ghcr.io/ggerganov/llama.cpp:server
+    ports: ["8080:8080"]
+    volumes: [./models:/models]
+    command: "--model /models/${MODEL_FILE:-model.gguf} --port 8080 --host 0.0.0.0"
+
+  # ── vLLM ────────────────────────────────────────────────────────────────────
+  vllm:
+    profiles: [vllm]
+    image: vllm/vllm-openai:latest
+    ports: ["8000:8000"]
+    volumes: [hf_cache:/root/.cache/huggingface]
+    command: >
+      --model ${MODEL:-google/gemma-3-1b-it}
+      ${QUANTIZATION:+--quantization $QUANTIZATION}
+    deploy:
+      resources:
+        reservations:
+          devices: [{capabilities: [gpu]}]
+
+volumes:
+  ollama_data:
+  hf_cache:
