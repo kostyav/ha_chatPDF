@@ -1,3 +1,3 @@
 engine: vllm
-model: google/gemma-3-1b-it   # HuggingFace model id
-quantization: awq              # passed as --quantization flag; leave empty to skip
+model: google/gemma-3-1b-it   # HuggingFace model id — downloaded automatically by vLLM
+quantization: ""               # leave empty for default precision; set e.g. bitsandbytes for 4-bit

@@ -13,4 +13,7 @@ include = ["src*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: requires a live inference server"]
+markers = [
+  "integration: requires a live inference server",
+  "install: runs pip install — mutates the environment",
+]

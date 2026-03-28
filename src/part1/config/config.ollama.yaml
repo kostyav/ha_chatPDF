@@ -1,3 +1,3 @@
 engine: ollama
-model: gemma:3-1b-it
-quantization: q4_0
+model: gemma3:1b   # default Ollama tag — already uses Q4_K_M internally
+quantization: ""   # leave empty; Ollama encodes quant inside the tag, not as a suffix

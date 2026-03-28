@@ -1,3 +1,5 @@
 engine: llamacpp
-model: ./models/gemma-3-1b-it-q4_0.gguf   # local .gguf file path
+model: models/gemma-3-1b-it-Q4_K_M.gguf   # local path where the GGUF is saved (relative to CWD)
+hf_repo: bartowski/gemma-3-1b-it-GGUF      # HuggingFace repo to download from
+hf_file: gemma-3-1b-it-Q4_K_M.gguf        # filename inside that repo
 quantization: ""                            # baked into the gguf filename

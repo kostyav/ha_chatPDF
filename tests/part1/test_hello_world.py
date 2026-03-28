@@ -1,11 +1,15 @@
 """Deliverable verification: successful 'Hello World' response from the model endpoint."""
 import pytest
+import yaml
 from src.part1.engines import get_client
+from .conftest import ENGINE_SERVER_FIXTURE
 
 
 @pytest.mark.integration
-def test_hello_world(default_config_path):
+def test_hello_world(default_config_path, request):
     """Send a Hello World prompt and assert a non-empty response is returned."""
+    engine = yaml.safe_load(default_config_path.read_text())["engine"]
+    request.getfixturevalue(ENGINE_SERVER_FIXTURE[engine])
     client, model = get_client(default_config_path)
     response = client.chat.completions.create(
         model=model,

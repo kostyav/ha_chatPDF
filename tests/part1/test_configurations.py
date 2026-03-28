@@ -1,11 +1,10 @@
 """Test factory behaviour across all engine/model/quantization configurations."""
 import pytest
-from unittest.mock import patch, MagicMock
 from pathlib import Path
 from openai import OpenAI
 
 from src.part1.engines.factory import load_config, get_client, ENGINE_BASE_URLS
-from .conftest import ENGINE_CONFIGS
+from .conftest import ENGINE_CONFIGS, ENGINE_SERVER_FIXTURE
 
 
 # ── Unit tests (no live server required) ──────────────────────────────────────
@@ -48,8 +47,9 @@ class TestGetClient:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("config_path,engine,_port", ENGINE_CONFIGS)
-def test_chat_completion_per_engine(config_path, engine, _port):
+def test_chat_completion_per_engine(config_path, engine, _port, request):
     """Verify each engine returns a non-empty chat completion (needs live server)."""
+    request.getfixturevalue(ENGINE_SERVER_FIXTURE[engine])
     client, model = get_client(config_path)
     resp = client.chat.completions.create(
         model=model,
@@ -61,8 +61,9 @@ def test_chat_completion_per_engine(config_path, engine, _port):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("config_path,engine,_port", ENGINE_CONFIGS)
-def test_model_list_per_engine(config_path, engine, _port):
+def test_model_list_per_engine(config_path, engine, _port, request):
     """Verify the engine's /v1/models endpoint lists at least one model."""
+    request.getfixturevalue(ENGINE_SERVER_FIXTURE[engine])
     client, _ = get_client(config_path)
-    models = client.models.list()
-    assert len(list(models)) >= 1
+    models = list(client.models.list())
+    assert len(models) >= 1

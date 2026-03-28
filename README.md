@@ -10,6 +10,14 @@ pip install -r requirements.txt   # runtime + test deps
 pip install -e .                  # make src.part1 importable
 ```
 
+> **Note — HuggingFace authentication:** `google/gemma-3-1b-it` and the llama.cpp GGUF counterpart are gated models. You must accept their terms on HuggingFace and authenticate before models can be downloaded:
+> ```bash
+> huggingface-cli login --token <your_token>
+> ```
+> Generate a token at https://huggingface.co/settings/tokens, then accept the model terms at https://huggingface.co/google/gemma-3-1b-it.
+
+> **Note — numpy 2.x compatibility:** `requirements.txt` pins `scipy>=1.13`, `scikit-learn>=1.5`, and `pandas>=2.2`. Older versions of these packages were compiled against numpy 1.x and will cause an `ImportError` (e.g. `cannot import name 'Inf' from numpy`) when vLLM is used. If you manage these packages outside of this file, ensure they meet the minimum versions above.
+
 ### 2. Configure the engine
 
 Edit `src/part1/config/config.yaml` to select the engine, model, and quantization:

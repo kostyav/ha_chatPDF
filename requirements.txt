@@ -1,6 +1,13 @@
 # Runtime
 openai>=1.0
 pyyaml>=6.0
+huggingface_hub>=0.20
 
 # Testing
 pytest>=8.0
+
+# numpy 2.x compatibility — these older versions have binary incompatibilities
+# with numpy>=2.0 that prevent vllm from importing correctly
+scipy>=1.13
+scikit-learn>=1.5
+pandas>=2.2
