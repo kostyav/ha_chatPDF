@@ -14,7 +14,7 @@ pip install -e .                  # make src.part1 importable
 > ```bash
 > huggingface-cli login --token <your_token>
 > ```
-> Generate a token at https://huggingface.co/settings/tokens, then accept the model terms at https://huggingface.co/google/gemma-3-1b-it.
+> Generate a token at https://huggingface.co/settings/tokens, then accept the model terms at https://huggingface.co/google/gemma-3-1b-it (used by vLLM) and https://huggingface.co/unsloth/gemma-3-1b-it-GGUF (used by llama.cpp).
 
 > **Note — numpy 2.x compatibility:** `requirements.txt` pins `scipy>=1.13`, `scikit-learn>=1.5`, and `pandas>=2.2`. Older versions of these packages were compiled against numpy 1.x and will cause an `ImportError` (e.g. `cannot import name 'Inf' from numpy`) when vLLM is used. If you manage these packages outside of this file, ensure they meet the minimum versions above.
 

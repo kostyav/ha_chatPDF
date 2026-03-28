@@ -4,6 +4,8 @@
 .lightning_studio
 .idea
 .vscode
+.triton
+models/
 
 .cursor-server
 .vscode-server

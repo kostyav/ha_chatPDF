@@ -101,7 +101,8 @@ case "$ENGINE" in
     # Pre-download so the server starts without waiting for a large model fetch.
     download_hf_model "$MODEL"
     python3 -m vllm.entrypoints.openai.api_server \
-        --model "$MODEL" ${QUANT:+--quantization "$QUANT"} &
+        --model "$MODEL" ${QUANT:+--quantization "$QUANT"} \
+        --enforce-eager &
     ;;
   *)
     echo "Unknown engine: $ENGINE"; exit 1 ;;

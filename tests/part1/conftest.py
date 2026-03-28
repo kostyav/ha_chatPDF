@@ -1,9 +1,13 @@
 """Shared fixtures and parametrize data for part1 tests."""
+import json
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -43,24 +47,70 @@ def _port_open(port: int) -> bool:
         return s.connect_ex(("localhost", port)) == 0
 
 
-def _wait_for_port(port: int, timeout: int) -> bool:
+def _wait_for_http(port: int, timeout: int) -> bool:
+    """Poll GET /v1/models until it returns HTTP 200 or timeout expires."""
+    url = f"http://localhost:{port}/v1/models"
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if _port_open(port):
-            return True
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
         time.sleep(1)
     return False
 
 
+def _warmup_inference(port: int, model: str, timeout: int = 60) -> bool:
+    """POST a minimal chat completion to confirm the inference engine is fully ready.
+
+    /v1/models responds before the model weights are loaded into the GPU.
+    A real inference call is the only reliable signal that the server won't
+    crash on the first request.
+    """
+    url = f"http://localhost:{port}/v1/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    }).encode()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status == 200
+        except Exception:
+            time.sleep(2)
+    return False
+
+
 def _start_server(cmd: list[str], port: int, timeout: int):
-    """Start cmd if port is not already bound. Returns (proc|None, started)."""
-    if _port_open(port):
-        return None, False          # already running externally — don't manage it
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if not _wait_for_port(port, timeout):
+    """Start cmd and wait until GET /v1/models returns 200. Returns (proc|None, started).
+
+    Uses an HTTP-level readiness check (not just TCP) for both the 'already running'
+    guard and the startup wait, so a stale half-dead process on the port is not mistaken
+    for a live server.
+    """
+    if _wait_for_http(port, timeout=5):
+        return None, False          # genuinely serving HTTP — externally managed
+    # Use a temp file for stderr — avoids blocking the process when a PIPE buffer fills up
+    stderr_file = tempfile.TemporaryFile()
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_file)
+    if not _wait_for_http(port, timeout):
+        stderr_file.seek(0)
+        last_stderr = stderr_file.read().decode(errors="replace")[-1000:]
         proc.terminate()
         proc.wait()
-        pytest.skip(f"Server on port {port} did not become ready within {timeout}s")
+        pytest.skip(
+            f"Server on port {port} did not respond to GET /v1/models within {timeout}s.\n"
+            f"Last stderr:\n{last_stderr}"
+        )
     return proc, True
 
 
@@ -141,10 +191,20 @@ def vllm_server():
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
         "--model", cfg["model"],
+        "--enforce-eager",    # disables CUDA graph / triton; avoids shared-memory OOM on small GPUs
+        "--max-model-len", "1024",  # caps KV-cache allocation; prevents OOM on first inference
     ]
     if cfg.get("quantization"):
         cmd += ["--quantization", cfg["quantization"]]
     proc, started = _start_server(cmd, port=8000, timeout=300)
+
+    # /v1/models responds before the GPU inference engine is fully ready.
+    # Run a warmup inference so we only yield once an actual request succeeds.
+    if started and not _warmup_inference(8000, cfg["model"]):
+        proc.terminate()
+        proc.wait()
+        pytest.skip("vLLM passed /v1/models but failed warmup inference — likely OOM on first request")
+
     yield
     if started:
         proc.terminate()

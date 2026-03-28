@@ -8,7 +8,7 @@ pip install -e .                  # make src.part1 importable as a package
 ```
 
 > **HuggingFace authentication required for llamacpp and vllm integration tests.**
-> The configured models (`google/gemma-3-1b-it`, `bartowski/gemma-3-1b-it-GGUF`) are gated.
+> The configured models (`google/gemma-3-1b-it`, `unsloth/gemma-3-1b-it-GGUF`) are gated.
 > Without a valid token the fixtures skip those tests with an actionable message.
 > To enable them:
 > ```bash
