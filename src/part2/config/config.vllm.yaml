@@ -1,0 +1,15 @@
+engine: vllm
+model: google/gemma-3-4b-it          # HuggingFace model id — downloaded automatically
+quantization: bitsandbytes            # 4-bit via bitsandbytes to fit T4 16GB
+
+embedding_model: BAAI/bge-small-en-v1.5
+colqwen_model: vidore/colqwen2-v0.1
+
+retriever:
+  top_k: 3
+  similarity_threshold: 0.3
+  index_dir: .byaldi_index
+
+parser:
+  dpi: 300
+  output_dir: .parsed_docs

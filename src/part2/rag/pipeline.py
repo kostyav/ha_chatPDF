@@ -1,0 +1,112 @@
+"""RAG pipeline: parse → index → retrieve → generate."""
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+from typing import Optional
+
+import yaml
+
+from ..engines.factory import get_client, load_config
+from .indexer import TextIndex, VisualIndex
+from .parser import ParsedDoc, parse_pdf
+
+NO_INFO_MSG = "The document does not contain information about this query."
+
+
+class RAGPipeline:
+    """End-to-end RAG pipeline using Docling + ColQwen2/Byaldi + sentence-transformers + LLM."""
+
+    def __init__(self, config_path: Optional[Path] = None):
+        cfg_path = Path(config_path or Path(__file__).parents[1] / "config" / "config.yaml")
+        self.cfg = load_config(cfg_path)
+        self.client, self.model = get_client(cfg_path)
+
+        emb_model = self.cfg.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+        self.text_index = TextIndex(emb_model)
+        self.visual_index = VisualIndex(self.cfg.get("colqwen_model", "vidore/colqwen2-v0.1"))
+
+        ret = self.cfg.get("retriever", {})
+        self._top_k: int = ret.get("top_k", 3)
+        self._threshold: float = ret.get("similarity_threshold", 0.3)
+        self._index_dir = Path(ret.get("index_dir", ".byaldi_index"))
+
+        par = self.cfg.get("parser", {})
+        self._dpi: int = par.get("dpi", 300)
+        self._parse_dir = Path(par.get("output_dir", ".parsed_docs"))
+
+        self.parsed: dict[str, ParsedDoc] = {}
+
+    # ── Indexing ───────────────────────────────────────────────────────────────
+
+    def index_documents(self, pdf_dir: Path) -> None:
+        """Parse all PDFs in pdf_dir and build text + visual indices."""
+        pdfs = sorted(pdf_dir.glob("*.pdf"))
+
+        for pdf_path in pdfs:
+            doc = parse_pdf(pdf_path, self._parse_dir / pdf_path.stem, self._dpi)
+            self.parsed[doc.pdf_id] = doc
+            # One chunk per document (full markdown); tables appended for context
+            tables_ctx = "\n\n".join(doc.tables_md)
+            text = doc.markdown + ("\n\n" + tables_ctx if tables_ctx else "")
+            self.text_index.add([{"text": text, "pdf_id": doc.pdf_id, "page_num": 0}])
+
+        # Visual index (heavy — skipped if Byaldi unavailable)
+        try:
+            self.visual_index.index(pdf_dir, self._index_dir)
+        except ImportError:
+            pass  # byaldi not installed; fall back to text-only retrieval
+
+    # ── Querying ───────────────────────────────────────────────────────────────
+
+    def query(self, question: str) -> dict:
+        """Retrieve relevant context and generate an answer."""
+        text_hits = self.text_index.search(question, k=self._top_k)
+        visual_hits = self.visual_index.search(question, k=self._top_k)
+
+        best_score = max(
+            [s for s, _ in text_hits] + [h["score"] for h in visual_hits] + [0.0]
+        )
+
+        if best_score < self._threshold:
+            return {
+                "answer": NO_INFO_MSG,
+                "retrieved_chunks": [],
+                "visual_results": [],
+                "best_score": best_score,
+            }
+
+        # Build multimodal message content
+        text_ctx = "\n\n---\n\n".join(c["text"] for _, c in text_hits)
+        content: list[dict] = [
+            {"type": "text", "text": f"Context:\n{text_ctx}\n\nQuestion: {question}"}
+        ]
+
+        # Attach up to 2 retrieved page images (keep VRAM usage low)
+        for hit in visual_hits[:2]:
+            b64 = hit.get("base64")
+            if b64:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{b64}"},
+                })
+
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=512,
+        )
+        answer = resp.choices[0].message.content.strip()
+
+        return {
+            "answer": answer,
+            "retrieved_chunks": [
+                {"score": s, "text": c["text"][:300], "pdf_id": c["pdf_id"]}
+                for s, c in text_hits
+            ],
+            "visual_results": [
+                {"score": h["score"], "doc_id": h.get("doc_id"), "page_num": h.get("page_num")}
+                for h in visual_hits
+            ],
+            "best_score": best_score,
+        }

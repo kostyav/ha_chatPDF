@@ -1,0 +1,15 @@
+engine: ollama          # one of: ollama | llamacpp | vllm
+model: gemma3:4b        # engine-specific model name / HF id / GGUF path
+quantization: q4_K_M    # ollama: tag suffix; vllm: --quantization value; llamacpp: baked in gguf
+
+embedding_model: sentence-transformers/all-MiniLM-L6-v2   # or BAAI/bge-small-en-v1.5
+colqwen_model: vidore/colqwen2-v0.1                        # Byaldi visual retriever
+
+retriever:
+  top_k: 3
+  similarity_threshold: 0.3   # below this → "document does not contain information"
+  index_dir: .byaldi_index
+
+parser:
+  dpi: 300
+  output_dir: .parsed_docs

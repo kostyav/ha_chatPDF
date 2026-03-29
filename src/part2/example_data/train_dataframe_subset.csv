@@ -1,0 +1,47 @@
+Unnamed: 0,pmcid,question,answer,global_id,question_type
+299,26781090,Which section does describe the Fig. 4?,"['Confirmation with whole-mtDNA genome data', 'Results']","[219186, 219150]",parent_relationship_understanding
+300,26781090,Which section does describe the Fig. 3?,"['Corroboration of founder analyses with genome-wide evidence', 'Results']","[219171, 219150]",parent_relationship_understanding
+301,26781090,"Where is the 'Alexander DH et al,2009' cited in the document?","['Methods', 'Genome-wide analysis']","[219120, 219140]",parent_relationship_understanding
+302,26781090,What subsections are in the Discussion?,['No subsection!'],[-1],child_relationship_understanding
+313,27822536,Which section does describe the TABLE 1 ?,"['DISCUSSION', 'RESULTS', 'The SOP destroys infectious genomic RNA across multiple virus families.']","[104016, 103978, 103988]",parent_relationship_understanding
+314,27822536,Name out the section that include the TABLE 1 .,"['DISCUSSION', 'RESULTS', 'The SOP destroys infectious genomic RNA across multiple virus families.']","[104016, 103978, 103988]",parent_relationship_understanding
+315,27822536,Name out the section that include the FIG 6 .,"['DISCUSSION', 'RESULTS']","[104016, 103978]",parent_relationship_understanding
+316,27822536,Which section does include the description of the FIG 1 ?,"['RESULTS', 'The SOP rapidly generates noninfectious barcoded DNA libraries for ssRNA+ viruses.']","[103978, 103979]",parent_relationship_understanding
+317,27822536,"Where can 'PicconeME et al,2009' be found in the document?",['MATERIALS AND METHODS'],[104030],parent_relationship_understanding
+318,27822536,What is the MATERIALS AND METHODS about?,['No subsection!'],[-1],child_relationship_understanding
+1663,28707075,Name out the section that include the Fig. 2.,"['Methylation Analysis of LINE-1 cfDNA Using Bisulfite Sequencing', 'Results']","[125551, 125552]",parent_relationship_understanding
+1664,28707075,Which section does describe the Fig. 1?,"['Methylation Analysis of LINE-1 cfDNA Using Bisulfite Sequencing', 'Results']","[125551, 125552]",parent_relationship_understanding
+1665,28707075,Where can you find the Table 1?,"['Results', 'Materials and Methods', 'Patients and Controls', 'Patient Samples']","[125552, 125526, 125550, 125525]",parent_relationship_understanding
+1666,28707075,"When you search for the description of Table 1, which sections do you need to check?","['Results', 'Materials and Methods', 'Patients and Controls', 'Patient Samples']","[125552, 125526, 125550, 125525]",parent_relationship_understanding
+1667,28707075,"When you check the Results, which subsections are included?","['Patients and Controls', 'Methylation Analysis of LINE-1 cfDNA Using Bisulfite Sequencing', 'Methylation Analysis of Individual LINE-1 CpG Sites by qPCR']","[125550, 125551, 125562]",child_relationship_understanding
+2209,23870758,Which section does include the description of the Table 6?,"['Methods', 'Results and discussion', 'Cytotoxicity studies']","[111702, 111728, 111720]",parent_relationship_understanding
+2210,23870758,"When you search for the description of Table 6, which sections do you need to check?","['Methods', 'Results and discussion', 'Cytotoxicity studies']","[111702, 111728, 111720]",parent_relationship_understanding
+2211,23870758,"When you search for the description of Figure 1, which sections do you need to check?",['Results and discussion'],[111728],parent_relationship_understanding
+2212,23870758,Name out the section that include the Figure 1.,['Results and discussion'],[111728],parent_relationship_understanding
+2213,23870758,"Which section does include the 'Petersen JM et al,1949'?",['Background'],[111703],parent_relationship_understanding
+2214,23870758,What subsections are in the Background?,['No subsection!'],[-1],child_relationship_understanding
+2378,28283751,"When you search for the description of Fig. 2, which sections do you need to check?",['Results'],[131896],parent_relationship_understanding
+2379,28283751,Which section does describe the Fig. 2?,['Results'],[131896],parent_relationship_understanding
+2380,28283751,"Where is the 'Nicoll RS,1977' cited in the document?",['Discussion'],[131904],parent_relationship_understanding
+2381,28283751,What subsections are in the Discussion?,['No subsection!'],[-1],child_relationship_understanding
+2602,24069913,What is the The Empowered Interpretations about?,['No subsection!'],[-1],child_relationship_understanding
+3042,27455834,"When you search for the description of Table 1, which sections do you need to check?","['Results and discussion', 'Nanoparticles functionalization with targeting peptides']","[212248, 212247]",parent_relationship_understanding
+3043,27455834,Which section does include the description of the Table 1?,"['Results and discussion', 'Nanoparticles functionalization with targeting peptides']","[212248, 212247]",parent_relationship_understanding
+3044,27455834,Which section does include the description of the Fig. 4?,"['Results and discussion', 'Aβ peptide grafted to AGuIX target specifically Aβ(1–42) fibrils']","[212248, 212264]",parent_relationship_understanding
+3045,27455834,Name out the section that include the Fig. 2.,"['Results and discussion', 'Nanoparticles functionalization with targeting peptides']","[212248, 212247]",parent_relationship_understanding
+3046,27455834,"When you search for the citation of 'Soto C et al,1998', which sections can you find it?","['Background', 'Conclusions']","[212238, 212290]",parent_relationship_understanding
+3047,27455834,What subsections are in the Conclusions?,['No subsection!'],[-1],child_relationship_understanding
+3284,28900828,Name out the section that include the Table 1.,"['Sample characteristic', 'Results']","[235671, 235669]",parent_relationship_understanding
+3285,28900828,Which section does include the description of the Table 2?,"['Growth curve of daily somatic symptoms', 'Results']","[235684, 235669]",parent_relationship_understanding
+3286,28900828,Where can you find the Fig. 1?,"['Predictors of time course of daily somatic symptoms', 'Results']","[235683, 235669]",parent_relationship_understanding
+3287,28900828,Which section does include the description of the Fig. 4?,"['Predictors of time course of daily somatic symptoms', 'Results']","[235683, 235669]",parent_relationship_understanding
+3288,28900828,"When you search for the citation of 'Braamse AMJ et al,2012', which sections can you find it?","['Discussion', 'Introduction']","[235693, 235650]",parent_relationship_understanding
+3289,28900828,What does the Introduction include?,['No subsection!'],[-1],child_relationship_understanding
+3433,28852960,Where can you find the Table 2?,"['Adjuvant therapy and CVE risk', 'Analysis at baseline', 'Results']","[221386, 221369, 221370]",parent_relationship_understanding
+3434,28852960,Where can you find the Table 3?,"['Analysis of arterial cardiovascular complications', 'Results']","[221385, 221370]",parent_relationship_understanding
+3435,28852960,Which section does describe the Fig. 1?,"['Analysis of arterial cardiovascular complications', 'Results']","[221385, 221370]",parent_relationship_understanding
+3436,28852960,Where can you find the Fig. 2?,"['Adjuvant therapy and CVE risk', 'Results']","[221386, 221370]",parent_relationship_understanding
+3437,28852960,"Where is the 'Graversen P et al,2016' cited in the document?",['Discussion'],[221393],parent_relationship_understanding
+3438,28852960,What subsections can be found in the Discussion?,['No subsection!'],[-1],child_relationship_understanding
+3759,25276518,Which section does include the description of the FIGURE 4.?,"['SMNet CONTRIBUTIONS TO ERADICATING POLIO IN UP', ""Plausibility of the SMNet's Contribution to Eradication""]","[120529, 120597]",parent_relationship_understanding
+3760,25276518,What does the SMNet CONTRIBUTIONS TO ERADICATING POLIO IN UP include?,"[""Plausibility of the SMNet's Contribution to Eradication""]",[120597],child_relationship_understanding

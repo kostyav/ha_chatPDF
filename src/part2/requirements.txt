@@ -1,0 +1,21 @@
+# --- Document parsing ---
+docling>=2.0
+
+# --- Visual retrieval (ColQwen2) ---
+byaldi>=0.0.6
+# Optional: 4-bit quantization for ColQwen2 on T4 GPU
+bitsandbytes>=0.43
+
+# --- Text retrieval ---
+sentence-transformers>=3.0
+faiss-gpu>=1.7         # use faiss-cpu if no GPU available
+
+# --- LLM inference client ---
+openai>=1.0
+
+# --- Evaluation ---
+bert-score>=0.3.13
+
+# --- Utilities ---
+pandas>=2.2
+pyyaml>=6.0

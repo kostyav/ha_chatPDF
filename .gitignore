@@ -5,11 +5,15 @@
 .idea
 .vscode
 .triton
+.kaggle/
 models/
 
 .cursor-server
 .vscode-server
 .windsurf-server
+
+*pdfvqa_prep_work*
+*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
