@@ -63,7 +63,10 @@ def _start_server(cmd: list[str], port: int, timeout: int):
     if _wait_for_http(port, timeout=5):
         return None, False
     stderr_file = tempfile.TemporaryFile()
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_file)
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_file)
+    except FileNotFoundError:
+        pytest.skip(f"Binary not found: {cmd[0]!r} — install it to run integration tests")
     if not _wait_for_http(port, timeout):
         stderr_file.seek(0)
         last = stderr_file.read().decode(errors="replace")[-1000:]
@@ -78,7 +81,10 @@ def _start_server(cmd: list[str], port: int, timeout: int):
 def ollama_server():
     cfg = yaml.safe_load((CONFIG_DIR / "config.ollama.yaml").read_text())
     proc, started = _start_server(["ollama", "serve"], port=11434, timeout=30)
-    subprocess.run(["ollama", "pull", cfg["model"]], check=True)
+    try:
+        subprocess.run(["ollama", "pull", cfg["model"]], check=True)
+    except FileNotFoundError:
+        pytest.skip("ollama binary not found — install Ollama to run integration tests")
     yield
     if started:
         proc.terminate(); proc.wait()

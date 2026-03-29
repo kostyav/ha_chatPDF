@@ -292,3 +292,61 @@ src/part2/example_data/*.pdf
 2. Add an example config file under [config/](config/).
 3. Add the new entry to `ENGINE_CONFIGS` in [tests/part2/conftest.py](../../tests/part2/conftest.py) —
    all parametrised tests will automatically cover it.
+
+## Now here are all the ways to use it:
+
+1. Single question
+
+cd /teamspace/studios/this_studio
+python -m src.part2.rag.pipeline \
+  --pdf-dir src/part2/example_data \
+  --question "What is the yield percentage of compound 12 in Toluene?"
+
+2. Interactive REPL (type questions one per line)
+
+python -m src.part2.rag.pipeline --pdf-dir src/part2/example_data
+
+-- Index ready.
+
+--Interactive mode — type a question or 'quit' to exit.
+
+Which section describes Fig. 4?
+
+What subsections are in the Discussion?
+
+quit
+
+3. Pipe questions from the CSV
+
+python -c "
+import pandas as pd
+df = pd.read_csv('src/part2/example_data/train_dataframe_subset.csv')
+print('\n'.join(df['question'].head(5).tolist()))
+" | python -m src.part2.rag.pipeline --pdf-dir src/part2/example_data
+
+
+4. Full evaluation with BERTScore against ground truth
+
+python -m src.part2.evaluate \
+  --csv     src/part2/example_data/train_dataframe_subset.csv \
+  --pdf-dir src/part2/example_data \
+  --output  eval_results.json
+
+
+Prerequisite — the LLM server must be running before you call any of the above. With Ollama (the default config):
+
+
+ollama serve &
+ollama pull gemma3:4b
+
+To switch engine, pass `--config` to either tool:
+
+python -m src.part2.rag.pipeline --pdf-dir src/part2/example_data \
+  --config src/part2/config/config.vllm.yaml \
+  --question "What is the yield of compound 12?"
+
+python -m src.part2.evaluate \
+  --csv src/part2/example_data/train_dataframe_subset.csv \
+  --pdf-dir src/part2/example_data \
+  --config src/part2/config/config.llamacpp.yaml \
+  --output eval_results.json

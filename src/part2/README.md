@@ -82,7 +82,7 @@ Reasoning: Gemma 3 analyzes the Markdown table provided in the prompt context.
 
 Output: "The yield for compound 12 in Toluene is 92%."
 
-Evaluation Script Requirements
+## Evaluation Script Requirements
 Generate a script that iterates through the CSV, compares the system-generated answer to the ground truth using a metric like BERTScore, and logs instances where visual schemes were required for the correct answer.
 
 

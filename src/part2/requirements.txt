@@ -8,7 +8,7 @@ bitsandbytes>=0.43
 
 # --- Text retrieval ---
 sentence-transformers>=3.0
-faiss-gpu>=1.7         # use faiss-cpu if no GPU available
+faiss-gpu-cu12 #>=1.7         # use faiss-cpu if no GPU available
 
 # --- LLM inference client ---
 openai>=1.0

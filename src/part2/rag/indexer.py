@@ -67,20 +67,26 @@ class VisualIndex:
         return self._model
 
     def index(self, pdf_dir: Path, index_dir: Path) -> None:
-        """Build a Byaldi index over all PDFs in pdf_dir."""
-        index_dir.mkdir(parents=True, exist_ok=True)
+        """Build a Byaldi index over all PDFs in pdf_dir.
+
+        We pass each PDF individually rather than the mixed directory
+        (which also contains CSV files that Byaldi rejects).
+        model.index() creates the index from the first PDF;
+        model.add_to_index() appends every subsequent one.
+        """
+        pdfs = sorted(pdf_dir.glob("*.pdf"))
+        if not pdfs:
+            return
         model = self._load_model()
-        model.index(
-            input_path=str(pdf_dir),
-            index_name="visual_index",
-            index_root=str(index_dir),
-            overwrite=True,
-        )
+        model.index(str(pdfs[0]), index_name="visual_index", overwrite=True)
+        for pdf in pdfs[1:]:
+            model.add_to_index(str(pdf), store_collection_with_index=False)
 
     def load(self, index_dir: Path) -> None:
         from byaldi import RAGMultiModalModel
+        # index_name is the folder name; index_root is where .byaldi/ lives
         self._model = RAGMultiModalModel.from_index(
-            str(index_dir / "visual_index"), verbose=0
+            "visual_index", index_root=str(index_dir), verbose=0
         )
 
     def search(self, query: str, k: int = 3) -> list[dict]:

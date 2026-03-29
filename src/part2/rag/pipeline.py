@@ -110,3 +110,41 @@ class RAGPipeline:
             ],
             "best_score": best_score,
         }
+
+
+def _cli() -> None:
+    import argparse, json, sys
+    parser = argparse.ArgumentParser(description="Index PDFs and query the RAG pipeline")
+    parser.add_argument("--pdf-dir", required=True, help="Directory containing PDF files to index")
+    parser.add_argument("--config",  default=None,  help="Config YAML path (default: config.yaml)")
+    parser.add_argument("--question", default=None, help="Single question (omit for interactive mode)")
+    args = parser.parse_args()
+
+    pipeline = RAGPipeline(args.config and Path(args.config))
+    print(f"Indexing PDFs in {args.pdf_dir} …")
+    pipeline.index_documents(Path(args.pdf_dir))
+    print("Index ready.\n")
+
+    def _ask(question: str) -> None:
+        result = pipeline.query(question)
+        print(f"Answer : {result['answer']}")
+        print(f"Score  : {result['best_score']:.3f}")
+        print("Chunks :")
+        for c in result["retrieved_chunks"]:
+            print(f"  [{c['score']:.3f}] ({c['pdf_id']}) {c['text'][:120]} …")
+        print()
+
+    if args.question:
+        _ask(args.question)
+    else:
+        print("Interactive mode — type a question or 'quit' to exit.")
+        for line in sys.stdin:
+            q = line.strip()
+            if q.lower() in ("quit", "exit", "q"):
+                break
+            if q:
+                _ask(q)
+
+
+if __name__ == "__main__":
+    _cli()

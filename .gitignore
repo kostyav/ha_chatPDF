@@ -6,6 +6,8 @@
 .vscode
 .triton
 .kaggle/
+.byaldi/
+
 models/
 
 .cursor-server

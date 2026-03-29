@@ -41,7 +41,7 @@ def test_run_returns_records_and_f1(mini_csv, tmp_path, default_config_path):
         records, avg_f1 = run(mini_csv, tmp_path, default_config_path, tmp_path / "out.json")
 
     assert len(records) == 2
-    assert 0.0 <= avg_f1 <= 1.0
+    assert 0.0 <= avg_f1 <= 1.001  # BERTScore can be fractionally above 1.0 due to float32
 
 
 def test_run_writes_json_output(mini_csv, tmp_path, default_config_path):
@@ -64,7 +64,7 @@ def test_run_each_record_has_bert_f1(mini_csv, tmp_path, default_config_path):
 
     for r in records:
         assert "bert_f1" in r
-        assert 0.0 <= r["bert_f1"] <= 1.0
+        assert 0.0 <= r["bert_f1"] <= 1.001  # BERTScore can be fractionally above 1.0 due to float32
 
 
 def test_run_no_info_answers_get_low_score(mini_csv, tmp_path, default_config_path):

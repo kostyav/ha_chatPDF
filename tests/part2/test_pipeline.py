@@ -106,7 +106,12 @@ def test_index_and_query_live(default_config_path, tmp_path, ollama_server):
     p = RAGPipeline(default_config_path)
     p._parse_dir = tmp_path / "parsed"
     p._index_dir = tmp_path / "index"
-    p.index_documents(EXAMPLE_DIR)
+    try:
+        p.index_documents(EXAMPLE_DIR)
+    except ValueError as e:
+        if "architecture" in str(e):
+            pytest.skip(f"Docling layout model incompatible with installed transformers: {e}")
+        raise
     result = p.query("What tables are present in the document?")
     assert result["answer"]
     assert result["answer"] != NO_INFO_MSG or result["best_score"] < p._threshold
