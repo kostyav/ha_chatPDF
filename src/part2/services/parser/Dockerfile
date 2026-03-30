@@ -3,7 +3,10 @@
 FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3-pip python3-dev && \
+    apt-get install -y --no-install-recommends \
+        python3-pip python3-dev \
+        libxcb1 libxcb-shm0 libxcb-xfixes0 \
+        libgl1 libglib2.0-0 libsm6 libxext6 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

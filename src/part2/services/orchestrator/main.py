@@ -211,8 +211,13 @@ class Orchestrator:
 def _cli() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="RAG orchestrator — index PDFs and query")
-    parser.add_argument("--pdf-dir",  required=True, help="Directory of PDFs to index")
-    parser.add_argument("--question", default=None,  help="Single question (omit for REPL)")
+    parser.add_argument(
+        "--pdf-dir",
+        default=os.environ.get("PDF_DIR"),
+        required=not os.environ.get("PDF_DIR"),
+        help="Directory of PDFs to index (or set PDF_DIR env var)",
+    )
+    parser.add_argument("--question", default=None, help="Single question (omit for REPL)")
     args = parser.parse_args()
 
     orch = Orchestrator()

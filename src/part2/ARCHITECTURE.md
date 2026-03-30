@@ -236,8 +236,9 @@ GPU usage stays around 4–5 GB on a single T4.
 ### Prerequisites
 
 ```bash
-# Pull the Gemma model into Ollama before starting
-docker compose run --rm ollama pull gemma3:4b
+# Start Ollama, then pull the model into the running container
+docker compose up -d ollama
+docker compose exec ollama ollama pull gemma3:4b
 
 # Copy PDFs into the shared volume
 docker volume create rag-part2_pdf-data
@@ -257,15 +258,13 @@ docker compose up --build
 
 ```bash
 docker compose run --rm orchestrator \
-  python main.py --pdf-dir /data/pdfs \
-  --question "Which section describes Fig. 4?"
+  python main.py --question "Which section describes Fig. 4?"
 ```
 
 ### Interactive REPL
 
 ```bash
-docker compose run --rm -it orchestrator \
-  python main.py --pdf-dir /data/pdfs
+docker compose run --rm -it orchestrator python main.py
 ```
 
 ### Switch LLM backend

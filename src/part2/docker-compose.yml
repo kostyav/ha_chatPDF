@@ -14,7 +14,6 @@ volumes:
   parsed-docs:       # Docling output (page images) written by parser
   byaldi-index:      # ColQwen2 index files written by visual_indexer
   kafka-data:
-  zookeeper-data:
 
 networks:
   rag-net:
@@ -23,25 +22,21 @@ services:
 
   # ── Infrastructure ───────────────────────────────────────────────────────────
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    volumes:
-      - zookeeper-data:/var/lib/zookeeper/data
-    networks: [rag-net]
-    restart: unless-stopped
-
   kafka:
     image: confluentinc/cp-kafka:7.6.0
-    depends_on: [zookeeper]
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # KRaft mode — no Zookeeper required
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks: [rag-net]
@@ -141,6 +136,7 @@ services:
       SIMILARITY_THRESHOLD: "0.3"
       TOP_K: "3"
       RETRIEVE_TIMEOUT: "60"
+      PDF_DIR: /data/pdfs
     volumes:
       - pdf-data:/data/pdfs:ro
     networks: [rag-net]
