@@ -172,10 +172,12 @@ question
 ### `text_indexer`
 
 - **Base image:** `python:3.12-slim`
-- **Key deps:** `sentence-transformers>=3.0`, `faiss-cpu>=1.8`
+- **Key deps:** `sentence-transformers>=3.0`, `qdrant-client>=1.9`
 - **Consumes:** `parse.results` (indexing), `retrieve.text.requests` (querying)
 - **Produces:** `index.ready`, `retrieve.text.results`
-- **Threads:** one per consumer loop; shared `_TextIndex` protected by a lock
+- **Threads:** one per consumer loop; `_TextIndex` is shared and thread-safe via Qdrant's own concurrency
+- **Persistence:** vectors are stored in the `qdrant` service (backed by the `qdrant-data` volume). On restart, `_is_indexed(pdf_id)` checks Qdrant before re-embedding — already-indexed PDFs are skipped, so `docker compose up` does not re-index.
+- **Idempotency:** each chunk's Qdrant point ID is a deterministic UUID derived from `md5(pdf_id + text)`, so upserts of duplicate content are no-ops.
 
 ### `visual_indexer`
 
@@ -240,12 +242,13 @@ GPU usage stays around 4–5 GB on a single T4.
 docker compose up -d ollama
 docker compose exec ollama ollama pull gemma3:4b
 
-# Copy PDFs into the shared volume
+# Copy N or 2  PDFs into the shared volume. Do not move all 10: it takes time on weakn machine
 docker volume create rag-part2_pdf-data
 docker run --rm -v rag-part2_pdf-data:/data/pdfs \
   -v $(pwd)/src/part2/example_data:/src:ro \
-  alpine sh -c "cp /src/*.pdf /data/pdfs/"
+  alpine sh -c "ls /src/*.pdf | head -2 | xargs -I{} cp -v {} /data/pdfs/"
 ```
+# You can later clean the files with: docker run --rm -v rag-part2_pdf-data:/data/pdfs
 
 ### Start all services
 

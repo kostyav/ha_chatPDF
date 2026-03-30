@@ -1,6 +1,6 @@
 # Visual indexer — Byaldi/ColQwen2 requires transformers>=4.47,<4.48 and a GPU.
 # Build context: src/part2/
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
