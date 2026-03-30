@@ -1,0 +1,148 @@
+# Build context for all services is src/part2/ so Dockerfiles can reference
+# shared/ and services/<name>/ with paths relative to that root.
+#
+# GPU note (single T4):
+#   parser, visual_indexer, and ollama all request the GPU.
+#   They are naturally time-separated: parser runs during indexing,
+#   visual_indexer is idle during parsing, ollama runs only during generation.
+#   For multi-GPU deployments, assign device IDs explicitly via device_ids.
+
+name: rag-part2
+
+volumes:
+  pdf-data:          # PDFs mounted into parser + visual_indexer (read-only consumer side)
+  parsed-docs:       # Docling output (page images) written by parser
+  byaldi-index:      # ColQwen2 index files written by visual_indexer
+  kafka-data:
+  zookeeper-data:
+
+networks:
+  rag-net:
+
+services:
+
+  # ── Infrastructure ───────────────────────────────────────────────────────────
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+    networks: [rag-net]
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks: [rag-net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    networks: [rag-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ── RAG services ─────────────────────────────────────────────────────────────
+
+  parser:
+    build:
+      context: .
+      dockerfile: services/parser/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      PARSED_DIR: /data/parsed
+      DPI: "300"
+    volumes:
+      - pdf-data:/data/pdfs:ro
+      - parsed-docs:/data/parsed
+    networks: [rag-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  text_indexer:
+    build:
+      context: .
+      dockerfile: services/text_indexer/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      CHUNK_MAX_CHARS: "800"
+    networks: [rag-net]
+    restart: unless-stopped
+
+  visual_indexer:
+    build:
+      context: .
+      dockerfile: services/visual_indexer/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      COLQWEN_MODEL: vidore/colqwen2-v0.1
+    volumes:
+      - pdf-data:/data/pdfs:ro
+      - byaldi-index:/data/byaldi_index
+    networks: [rag-net]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: gemma3:4b
+      SIMILARITY_THRESHOLD: "0.3"
+      TOP_K: "3"
+      RETRIEVE_TIMEOUT: "60"
+    volumes:
+      - pdf-data:/data/pdfs:ro
+    networks: [rag-net]
+    stdin_open: true
+    tty: true

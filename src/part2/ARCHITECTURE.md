@@ -8,14 +8,30 @@ two complementary retrieval strategies with a multimodal LLM generator:
 - **Text retrieval** — sentence-transformers embeddings stored in a FAISS index
   capture explicit content (tables, methods, results).
 - **Visual retrieval** — ColQwen2-2B via Byaldi indexes page images as visual
-  patches, capturing content that is invisible to text embeddings (figures,
-  chemical schemes, epidemiological maps).
+  patches, capturing content invisible to text embeddings (figures, chemical
+  schemes, epidemiological maps).
 - **Generation** — Gemma 3 4B receives the retrieved text chunks and up to two
   page images as a multimodal prompt and produces a grounded answer.
 
 All three LLM inference backends (Ollama, llama.cpp, vLLM) expose an
-OpenAI-compatible REST API, so the generator is backend-agnostic — the same
-`openai.OpenAI` client is used regardless of the engine.
+OpenAI-compatible REST API, so the generator is backend-agnostic.
+
+---
+
+## Why Docker + Kafka?
+
+The two retrieval libraries have **mutually incompatible `transformers` pins**:
+
+| Service         | Library              | `transformers` constraint        |
+|-----------------|----------------------|----------------------------------|
+| `parser`        | Docling              | `>=4.48` (needs `rt_detr_v2`)    |
+| `visual_indexer`| Byaldi / colpali-engine | `>=4.47, <4.48`               |
+| `text_indexer`  | sentence-transformers | no conflict                     |
+| `orchestrator`  | openai client only    | no conflict                     |
+
+Each service runs in its own container with its own Python environment, and they
+communicate exclusively through **Kafka topics** — no shared memory, no
+conflicting imports.
 
 ---
 
@@ -25,328 +41,256 @@ OpenAI-compatible REST API, so the generator is backend-agnostic — the same
 src/part2/
 ├── ARCHITECTURE.md          ← this file
 ├── README.md                ← task specification
-├── requirements.txt         ← all runtime dependencies
+├── docker-compose.yml       ← spins up Kafka + all four services + Ollama
 │
-├── config/                  ← runtime configuration (one file per engine)
-│   ├── config.yaml          ← ACTIVE config (edit this to switch engine/model)
+├── shared/                  ← Kafka topic names and message constructors
+│   ├── __init__.py
+│   └── schemas.py           ← imported by every service via PYTHONPATH=/app
+│
+├── services/                ← one sub-directory per Docker container
+│   ├── parser/
+│   │   ├── Dockerfile       ← nvidia/cuda base; transformers>=4.48
+│   │   ├── requirements.txt
+│   │   └── main.py          ← Kafka consumer/producer wrapping Docling
+│   │
+│   ├── text_indexer/
+│   │   ├── Dockerfile       ← python:3.12-slim; no GPU required
+│   │   ├── requirements.txt
+│   │   └── main.py          ← FAISS index + sentence-transformers
+│   │
+│   ├── visual_indexer/
+│   │   ├── Dockerfile       ← nvidia/cuda base; transformers>=4.47,<4.48
+│   │   ├── requirements.txt
+│   │   └── main.py          ← Byaldi/ColQwen2 index
+│   │
+│   └── orchestrator/
+│       ├── Dockerfile       ← python:3.12-slim; no GPU required
+│       ├── requirements.txt
+│       └── main.py          ← pipeline coordinator + CLI
+│
+├── config/                  ← LLM engine configs (used by orchestrator env vars)
+│   ├── config.yaml          ← ACTIVE config
 │   ├── config.ollama.yaml
 │   ├── config.llamacpp.yaml
 │   └── config.vllm.yaml
 │
-├── engines/                 ← engine abstraction (mirrors src/part1/engines/)
+├── rag/                     ← original single-process library (kept for tests)
 │   ├── __init__.py
-│   └── factory.py           ← load_config() + get_client() → (OpenAI, model_name)
+│   ├── parser.py
+│   ├── indexer.py
+│   └── pipeline.py
 │
-├── rag/                     ← retrieval-augmented generation components
-│   ├── __init__.py
-│   ├── parser.py            ← Docling: PDF → Markdown + tables + page images
-│   ├── indexer.py           ← TextIndex (FAISS) + VisualIndex (Byaldi/ColQwen2)
-│   └── pipeline.py          ← RAGPipeline: index_documents() + query()
-│
-└── evaluate.py              ← BERTScore evaluation loop over ground-truth CSV
+└── evaluate.py              ← BERTScore evaluation loop
 
 tests/part2/
-├── conftest.py              ← shared fixtures, server lifecycle
-├── test_config.py           ← config + factory unit tests
-├── test_parser.py           ← parser unit + integration tests
-├── test_pipeline.py         ← pipeline unit + integration tests
-├── test_configurations.py   ← per-engine parametrised tests
-└── test_evaluate.py         ← evaluation script unit tests
+├── conftest.py
+├── test_config.py
+├── test_parser.py
+├── test_pipeline.py
+├── test_configurations.py
+└── test_evaluate.py
 ```
 
 ---
 
-## Configuration Schema
-
-Every config file is a YAML document with the following keys:
-
-```yaml
-engine: ollama                                    # one of: ollama | llamacpp | vllm
-model: gemma3:4b                                  # engine-specific identifier
-quantization: q4_K_M                              # optional — interpretation varies by engine
-
-embedding_model: sentence-transformers/all-MiniLM-L6-v2  # or BAAI/bge-small-en-v1.5
-colqwen_model:   vidore/colqwen2-v0.1             # Byaldi visual retriever
-
-retriever:
-  top_k: 3                                        # chunks returned per query
-  similarity_threshold: 0.3                       # below this → no-information response
-  index_dir: .byaldi_index
-
-parser:
-  dpi: 300                                        # page image resolution
-  output_dir: .parsed_docs
-```
-
-### `model` and `quantization` per engine
-
-| Engine    | `model` value                     | `quantization` effect                        |
-|-----------|-----------------------------------|----------------------------------------------|
-| ollama    | Ollama tag, e.g. `gemma3:4b`      | Encoded inside the tag; leave empty          |
-| llamacpp  | Local `.gguf` path                | Baked into the filename; field is ignored    |
-| vllm      | HuggingFace model id              | Passed as `--quantization` CLI flag          |
-
----
-
-## Component Breakdown
-
-### `engines/factory.py` — engine abstraction
+## Kafka Topics
 
 ```
-get_client(config_path)
-│
-├── load_config(path)              # reads YAML → dict
-│
-├── ENGINE_BASE_URLS[engine]       # dict lookup
-│   ├── ollama   → :11434/v1
-│   ├── llamacpp → :8080/v1
-│   └── vllm     → :8000/v1
-│
-└── OpenAI(base_url=..., api_key="none")
-    └── returns (client, model_name)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Topic                     Producer         Consumer(s)                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ parse.requests            orchestrator     parser, visual_indexer           │
+│ parse.results             parser           text_indexer                     │
+│ index.ready               text_indexer,    orchestrator                     │
+│                           visual_indexer                                    │
+│ retrieve.text.requests    orchestrator     text_indexer                     │
+│ retrieve.text.results     text_indexer     orchestrator                     │
+│ retrieve.visual.requests  orchestrator     visual_indexer                   │
+│ retrieve.visual.results   visual_indexer   orchestrator                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Identical pattern to `src/part1/engines/factory.py`. The rest of the system
-only ever calls `get_client()` — the engine choice is fully encapsulated.
-
----
-
-### `rag/parser.py` — document parsing
-
-Uses **Docling** for layout-aware PDF extraction.
-
-```
-parse_pdf(pdf_path, output_dir, dpi)
-│
-├── DocumentConverter(PdfFormatOption(generate_page_images=True, scale=dpi/72))
-│   └── converter.convert(pdf_path)
-│
-├── doc.export_to_markdown()       → ParsedDoc.markdown  (full text + inline tables)
-├── doc.tables[*].export_to_markdown() → ParsedDoc.tables_md  (standalone Markdown tables)
-└── doc.pages[n].image.pil_image.save(…) → ParsedDoc.page_images  [Path, …]
-```
-
-`ParsedDoc` is a plain dataclass — no framework coupling.
-
----
-
-### `rag/indexer.py` — dual vector store
-
-#### `TextIndex` — FAISS + sentence-transformers
-
-```
-TextIndex(model_name)
-│
-├── add(chunks)
-│   ├── SentenceTransformer.encode(texts, normalize_embeddings=True)
-│   └── faiss.IndexFlatIP.add(embeddings)        # inner-product = cosine on normalised vecs
-│
-├── search(query, k) → [(score, chunk_dict), …]
-│   └── index.search(q_embedding, k)
-│
-├── save(path) / load(path)
-│   ├── faiss.write_index / read_index
-│   └── pickle chunks list
-```
-
-#### `VisualIndex` — Byaldi + ColQwen2
-
-```
-VisualIndex(model_name)
-│
-├── index(pdf_dir, index_dir)
-│   └── RAGMultiModalModel.from_pretrained(colqwen_model)
-│       └── model.index(input_path=pdf_dir, index_name="visual_index")
-│
-├── load(index_dir)
-│   └── RAGMultiModalModel.from_index(…)
-│
-└── search(query, k) → [{"score", "doc_id", "page_num", "base64"}, …]
-    └── model.search(query, k, return_base64_results=True)
-```
-
-`VisualIndex` is lazy-imported — if `byaldi` is not installed the pipeline
-falls back to text-only retrieval without raising an error.
-
----
-
-### `rag/pipeline.py` — RAGPipeline
-
-The central orchestrator.
-
-#### `index_documents(pdf_dir)`
-
-```
-for each PDF in pdf_dir:
-    parse_pdf(pdf_path) → ParsedDoc
-    TextIndex.add([{text: markdown + tables, pdf_id, page_num}])
-
-VisualIndex.index(pdf_dir, index_dir)     # no-op if byaldi unavailable
-```
-
-#### `query(question) → dict`
-
-```
-query(question)
-│
-├── TextIndex.search(question, k)      → [(score, chunk), …]
-├── VisualIndex.search(question, k)    → [{score, base64, …}, …]
-│
-├── best_score = max(text scores + visual scores)
-│
-├── [best_score < threshold?]
-│   └── YES → return NO_INFO_MSG   ← no LLM call
-│
-├── build multimodal content list
-│   ├── {"type": "text", "text": context + question}
-│   └── {"type": "image_url", "image_url": …}  × up to 2 page images
-│
-└── client.chat.completions.create(model, messages, max_tokens=512)
-    └── return {answer, retrieved_chunks, visual_results, best_score}
-```
-
-The similarity threshold gate prevents hallucination on out-of-scope queries
-and avoids unnecessary LLM calls.
-
----
-
-### `evaluate.py` — evaluation loop
-
-```
-run(csv_path, pdf_dir, config_path, out_path)
-│
-├── RAGPipeline(config_path).index_documents(pdf_dir)
-│
-├── for each row in CSV:
-│   └── pipeline.query(question)
-│       └── record {question, ground_truth, predicted, retrieved_chunks, best_score}
-│
-├── bert_score(hyps, refs, lang="en")   → P, R, F1 per sample
-│   └── append bert_f1 to each record
-│
-├── print avg BERTScore F1
-└── write JSON log to out_path
-```
-
-**BERTScore F1** is the primary metric — it captures semantic similarity
-without requiring exact string matches, which matters for free-text answers.
-Instances where `best_score < threshold` (i.e. visual-only queries where text
-retrieval fails) can be identified in the log by their low `best_score` value.
+Message schemas are defined in [shared/schemas.py](shared/schemas.py).
+Every message is a JSON-serialised dict; the constructor names document the
+field names expected by each consumer.
 
 ---
 
 ## End-to-End Data Flow
 
+### Indexing
+
 ```
-config.yaml
-  engine / model / quantization / embedding_model / colqwen_model
-         │
-         ├─────────────────────────────────────────────────────────► LLM server
-         │                                                           (Ollama / llama.cpp / vLLM)
-         ▼
-src/part2/example_data/*.pdf
-         │
-         ▼ parse_pdf (Docling)
-    ParsedDoc {markdown, tables_md, page_images}
-         │
-         ├──► TextIndex (sentence-transformers + FAISS)
-         │
-         └──► VisualIndex (ColQwen2 + Byaldi)
-                        │
-    question ──────────►├──► TextIndex.search()  →  top-K text chunks
-                        └──► VisualIndex.search() → top-K page images + scores
-                                    │
-                          [best_score < threshold?]
-                          NO  ──► multimodal LLM prompt ──► answer
-                          YES ──► "The document does not contain information…"
-                                    │
-                         evaluate.py (BERTScore F1 vs ground-truth CSV)
-                                    │
-                              eval_results.json
+orchestrator
+  │  parse.requests {pdf_path, pdf_id}  ×N
+  ├──────────────────────────────────────────► parser
+  │                                              │ parse.results {pdf_id, markdown, tables_md}
+  │                                              └──────────────────────────────► text_indexer
+  │                                                                                  │ index.ready {service:"text", pdf_id}
+  │                                                                                  └────────────────────────────────────► orchestrator
+  │
+  └──────────────────────────────────────────► visual_indexer   (consumes parse.requests directly;
+                                                 │               Byaldi indexes PDFs, not parsed text)
+                                                 │ index.ready {service:"visual", pdf_id}
+                                                 └────────────────────────────────────────────────► orchestrator
 ```
+
+Orchestrator blocks until both `index.ready` sets cover every expected `pdf_id`.
+
+### Query
+
+```
+question
+  │
+  orchestrator
+  │  retrieve.text.requests {correlation_id, question, top_k}
+  ├──────────────────────────────────────────────────────────► text_indexer
+  │                                                              │ retrieve.text.results {correlation_id, hits}
+  │                                                              └──────────────────────────────────────────► orchestrator (queue)
+  │
+  │  retrieve.visual.requests {correlation_id, question, top_k}
+  └──────────────────────────────────────────────────────────► visual_indexer
+                                                                 │ retrieve.visual.results {correlation_id, hits}
+                                                                 └──────────────────────────────────────────► orchestrator (queue)
+
+  orchestrator collects both results, applies similarity threshold,
+  then calls Ollama/llama.cpp/vLLM via OpenAI-compatible REST API.
+```
+
+---
+
+## Service Details
+
+### `parser`
+
+- **Base image:** `nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04`
+- **Key dep:** `docling>=2.28`, `transformers>=4.48` (rt_detr_v2 layout model)
+- **Consumes:** `parse.requests`
+- **Produces:** `parse.results`
+- **Volume:** `/data/pdfs` (read-only), `/data/parsed` (page image output)
+
+### `text_indexer`
+
+- **Base image:** `python:3.12-slim`
+- **Key deps:** `sentence-transformers>=3.0`, `faiss-cpu>=1.8`
+- **Consumes:** `parse.results` (indexing), `retrieve.text.requests` (querying)
+- **Produces:** `index.ready`, `retrieve.text.results`
+- **Threads:** one per consumer loop; shared `_TextIndex` protected by a lock
+
+### `visual_indexer`
+
+- **Base image:** `nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04`
+- **Key deps:** `byaldi>=0.0.6`, `colpali-engine>=0.3.8`, `transformers>=4.47,<4.48`
+- **Consumes:** `parse.requests` (indexing — needs raw PDF path, not parsed text),
+  `retrieve.visual.requests` (querying)
+- **Produces:** `index.ready`, `retrieve.visual.results`
+- **Volume:** `/data/pdfs` (read-only), `/data/byaldi_index` (index storage)
+
+### `orchestrator`
+
+- **Base image:** `python:3.12-slim`
+- **Key deps:** `kafka-python>=2.0`, `openai>=1.0`
+- **Background threads:** `_consume_index_ready`, `_consume_text_results`,
+  `_consume_visual_results`
+- **Query correlation:** each query gets a `uuid4` correlation ID; result queues
+  are registered before sending retrieve requests and cleaned up after receipt.
+
+---
+
+## Configuration
+
+Services are configured via environment variables in `docker-compose.yml`:
+
+| Variable              | Service       | Default                        |
+|-----------------------|---------------|--------------------------------|
+| `KAFKA_BOOTSTRAP`     | all           | `kafka:9092`                   |
+| `DPI`                 | parser        | `300`                          |
+| `EMBEDDING_MODEL`     | text_indexer  | `all-MiniLM-L6-v2`             |
+| `CHUNK_MAX_CHARS`     | text_indexer  | `800`                          |
+| `COLQWEN_MODEL`       | visual_indexer| `vidore/colqwen2-v0.1`         |
+| `LLM_BASE_URL`        | orchestrator  | `http://ollama:11434/v1`       |
+| `LLM_MODEL`           | orchestrator  | `gemma3:4b`                    |
+| `SIMILARITY_THRESHOLD`| orchestrator  | `0.3`                          |
+| `TOP_K`               | orchestrator  | `3`                            |
+| `RETRIEVE_TIMEOUT`    | orchestrator  | `60` (seconds)                 |
 
 ---
 
 ## GPU Memory Budget (T4 16 GB)
 
-| Component         | Allocation | Strategy                                          |
-|-------------------|------------|---------------------------------------------------|
-| ColQwen2-2B       | ~3–4 GB    | Load via Byaldi; add `BitsAndBytesConfig` for 4-bit to halve this |
-| Gemma 3 4B (GGUF) | ~2.5 GB    | Served by Ollama using `q4_K_M` tag               |
-| FAISS index       | < 100 MB   | CPU-side; no GPU memory used                      |
-| Page images       | < 500 MB   | Capped at 300 DPI; sent as base64 in prompt       |
-| **Total**         | **~7 GB**  | Comfortable headroom on 16 GB                     |
+| Service           | When active     | Allocation  | Notes                              |
+|-------------------|-----------------|-------------|-------------------------------------|
+| `parser`          | indexing only   | ~4–5 GB     | Docling layout + OCR models         |
+| `visual_indexer`  | indexing + query| ~3–4 GB     | ColQwen2-2B; add 4-bit quant to halve|
+| `ollama` (Gemma)  | query only      | ~2.5 GB     | `q4_K_M` quantisation               |
+| `text_indexer`    | always          | CPU only    | FAISS runs on CPU                   |
+| `orchestrator`    | always          | CPU only    | No ML models                        |
+
+Parser and Ollama are naturally time-separated (indexing vs generation), so peak
+GPU usage stays around 4–5 GB on a single T4.
 
 ---
 
-## Adding a New Embedding Model
+## How to Run
 
-1. Add the HuggingFace model id to the `embedding_model` field in the relevant
-   config file under [config/](config/).
-2. No code change required — `TextIndex` accepts any `sentence-transformers`
-   compatible model name.
+### Prerequisites
 
-## Adding a New Inference Engine
+```bash
+# Pull the Gemma model into Ollama before starting
+docker compose run --rm ollama pull gemma3:4b
 
-1. Add its `base_url` to `ENGINE_BASE_URLS` in [engines/factory.py](engines/factory.py).
-2. Add an example config file under [config/](config/).
-3. Add the new entry to `ENGINE_CONFIGS` in [tests/part2/conftest.py](../../tests/part2/conftest.py) —
-   all parametrised tests will automatically cover it.
+# Copy PDFs into the shared volume
+docker volume create rag-part2_pdf-data
+docker run --rm -v rag-part2_pdf-data:/data/pdfs \
+  -v $(pwd)/src/part2/example_data:/src:ro \
+  alpine sh -c "cp /src/*.pdf /data/pdfs/"
+```
 
-## Now here are all the ways to use it:
+### Start all services
 
-1. Single question
+```bash
+cd src/part2
+docker compose up --build
+```
 
+### Run a query via the orchestrator CLI
+
+```bash
+docker compose run --rm orchestrator \
+  python main.py --pdf-dir /data/pdfs \
+  --question "Which section describes Fig. 4?"
+```
+
+### Interactive REPL
+
+```bash
+docker compose run --rm -it orchestrator \
+  python main.py --pdf-dir /data/pdfs
+```
+
+### Switch LLM backend
+
+Override `LLM_BASE_URL` and `LLM_MODEL` in `docker-compose.yml` or pass them
+as environment overrides:
+
+```bash
+LLM_BASE_URL=http://vllm:8000/v1 LLM_MODEL=google/gemma-3-4b-it \
+  docker compose up orchestrator
+```
+
+---
+
+## Single-process mode (no Docker)
+
+The original `rag/` module remains for unit tests and local development without
+Docker.  It has the same chunking logic as `text_indexer` and the same Byaldi
+wrapper as `visual_indexer`, but runs everything in one process.
+
+```bash
 cd /teamspace/studios/this_studio
 python -m src.part2.rag.pipeline \
   --pdf-dir src/part2/example_data \
-  --question "What is the yield percentage of compound 12 in Toluene?"
+  --question "Which section describes Fig. 4?"
+```
 
-2. Interactive REPL (type questions one per line)
-
-python -m src.part2.rag.pipeline --pdf-dir src/part2/example_data
-
--- Index ready.
-
---Interactive mode — type a question or 'quit' to exit.
-
-Which section describes Fig. 4?
-
-What subsections are in the Discussion?
-
-quit
-
-3. Pipe questions from the CSV
-
-python -c "
-import pandas as pd
-df = pd.read_csv('src/part2/example_data/train_dataframe_subset.csv')
-print('\n'.join(df['question'].head(5).tolist()))
-" | python -m src.part2.rag.pipeline --pdf-dir src/part2/example_data
-
-
-4. Full evaluation with BERTScore against ground truth
-
-python -m src.part2.evaluate \
-  --csv     src/part2/example_data/train_dataframe_subset.csv \
-  --pdf-dir src/part2/example_data \
-  --output  eval_results.json
-
-
-Prerequisite — the LLM server must be running before you call any of the above. With Ollama (the default config):
-
-
-ollama serve &
-ollama pull gemma3:4b
-
-To switch engine, pass `--config` to either tool:
-
-python -m src.part2.rag.pipeline --pdf-dir src/part2/example_data \
-  --config src/part2/config/config.vllm.yaml \
-  --question "What is the yield of compound 12?"
-
-python -m src.part2.evaluate \
-  --csv src/part2/example_data/train_dataframe_subset.csv \
-  --pdf-dir src/part2/example_data \
-  --config src/part2/config/config.llamacpp.yaml \
-  --output eval_results.json
+Prerequisite: Ollama must be running locally (`ollama serve && ollama pull gemma3:4b`).

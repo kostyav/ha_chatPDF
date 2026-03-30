@@ -98,4 +98,4 @@ So each engine must be separately loaded with its corresponding config.
 4. More tests must be created to verify different configurations of inference engine, model and quantization.
 
 5. All the code (LOC) must be kept as minimal as possible. Use 3rd party libraries as much as possible to minimize the LOC.
-The code must be kept in src/part1 folder. Add more subfolders to keep the layout clean and simple
+The code must be kept in src/part2 folder. Add more subfolders to keep the layout clean and simple

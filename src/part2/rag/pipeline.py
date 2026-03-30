@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,32 @@ import yaml
 from ..engines.factory import get_client, load_config
 from .indexer import TextIndex, VisualIndex
 from .parser import ParsedDoc, parse_pdf
+
+
+def _split_markdown(text: str, max_chars: int = 800) -> list[str]:
+    """Split markdown into section-level chunks, then by size if a section is too large."""
+    # Split on level 1-3 headers, keeping the header with its content
+    sections = re.split(r'(?=^#{1,3} )', text, flags=re.MULTILINE)
+    chunks: list[str] = []
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        if len(section) <= max_chars:
+            chunks.append(section)
+        else:
+            # Further split oversized sections by paragraph
+            paragraphs = re.split(r'\n\n+', section)
+            buf = ""
+            for para in paragraphs:
+                if buf and len(buf) + len(para) + 2 > max_chars:
+                    chunks.append(buf.strip())
+                    buf = para
+                else:
+                    buf = (buf + "\n\n" + para).strip() if buf else para
+            if buf:
+                chunks.append(buf.strip())
+    return chunks or [text[:max_chars]]
 
 NO_INFO_MSG = "The document does not contain information about this query."
 
@@ -46,10 +73,14 @@ class RAGPipeline:
         for pdf_path in pdfs:
             doc = parse_pdf(pdf_path, self._parse_dir / pdf_path.stem, self._dpi)
             self.parsed[doc.pdf_id] = doc
-            # One chunk per document (full markdown); tables appended for context
+            # Split document into section-level chunks for better retrieval precision
             tables_ctx = "\n\n".join(doc.tables_md)
-            text = doc.markdown + ("\n\n" + tables_ctx if tables_ctx else "")
-            self.text_index.add([{"text": text, "pdf_id": doc.pdf_id, "page_num": 0}])
+            full_text = doc.markdown + ("\n\n" + tables_ctx if tables_ctx else "")
+            section_chunks = _split_markdown(full_text)
+            self.text_index.add([
+                {"text": chunk, "pdf_id": doc.pdf_id, "page_num": 0}
+                for chunk in section_chunks
+            ])
 
         # Visual index (heavy — skipped if Byaldi unavailable)
         try:
