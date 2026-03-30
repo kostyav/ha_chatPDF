@@ -1,26 +1,23 @@
-"""Orchestrator service — coordinates indexing and query pipeline over Kafka.
+"""Orchestrator service — coordinates indexing and query pipeline over Redis queues.
 
 Indexing flow:
-  1. Send parse.requests for every PDF in pdf_dir.
+  1. Push parse.requests for every PDF in pdf_dir.
   2. Wait until both "text" and "visual" index.ready messages arrive for every PDF.
 
 Query flow:
-  1. Assign a correlation_id and register result queues for both indexers.
-  2. Publish retrieve.text.requests and retrieve.visual.requests in parallel.
-  3. Block until both result messages arrive (or timeout).
+  1. Assign a correlation_id; result queues are per-correlation Redis lists.
+  2. Push retrieve.text.requests and retrieve.visual.requests.
+  3. BRPOP both result lists (blocking, with timeout).
   4. Apply similarity threshold; if above, call the LLM with text + image context.
 """
-import json
 import logging
 import os
-import queue
 import sys
 import threading
-import time
 import uuid
 from pathlib import Path
 
-from kafka import KafkaConsumer, KafkaProducer
+import redis
 from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
@@ -31,7 +28,7 @@ import shared.schemas as schemas
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [orchestrator] %(message)s")
 log = logging.getLogger(__name__)
 
-KAFKA_BOOTSTRAP      = os.environ.get("KAFKA_BOOTSTRAP",      "kafka:9092")
+REDIS_URL            = os.environ.get("REDIS_URL",            "redis://redis:6379/0")
 QDRANT_HOST          = os.environ.get("QDRANT_HOST",          "qdrant")
 QDRANT_PORT          = int(os.environ.get("QDRANT_PORT",      "6333"))
 QDRANT_COLLECTION    = "rag_chunks"
@@ -39,89 +36,45 @@ LLM_BASE_URL         = os.environ.get("LLM_BASE_URL",         "http://ollama:114
 LLM_MODEL            = os.environ.get("LLM_MODEL",            "gemma3:4b")
 SIMILARITY_THRESHOLD = float(os.environ.get("SIMILARITY_THRESHOLD", "0.3"))
 TOP_K                = int(os.environ.get("TOP_K",                  "3"))
-RETRIEVE_TIMEOUT     = float(os.environ.get("RETRIEVE_TIMEOUT",    "60"))
+RETRIEVE_TIMEOUT     = int(os.environ.get("RETRIEVE_TIMEOUT",       "60"))
 
 NO_INFO_MSG = "The document does not contain information about this query."
 
 
 class Orchestrator:
     def __init__(self) -> None:
-        self._producer = KafkaProducer(
-            bootstrap_servers=KAFKA_BOOTSTRAP,
-            value_serializer=lambda v: json.dumps(v).encode(),
+        self._r      = redis.from_url(REDIS_URL, decode_responses=True)
+        self._r_bg   = redis.from_url(REDIS_URL, decode_responses=True)  # dedicated to background thread
+        self._r.delete(
+            schemas.Q_PARSE_REQUESTS, schemas.Q_INDEX_READY,
+            schemas.Q_RETRIEVE_TEXT_REQ, schemas.Q_RETRIEVE_TEXT_RES,
+            schemas.Q_RETRIEVE_VIS_REQ,  schemas.Q_RETRIEVE_VIS_RES,
         )
         self._llm = OpenAI(base_url=LLM_BASE_URL, api_key="none")
-
-        # correlation_id → {"text": Queue, "visual": Queue}
-        self._pending: dict[str, dict[str, queue.Queue]] = {}
-        self._pending_lock = threading.Lock()
 
         # pdf_id sets confirmed ready per service
         self._index_ready: dict[str, set[str]] = {"text": set(), "visual": set()}
         self._index_event = threading.Event()
 
-        for target in (
-            self._consume_index_ready,
-            self._consume_text_results,
-            self._consume_visual_results,
-        ):
-            threading.Thread(target=target, daemon=True).start()
-        # Give consumers time to connect and register with the broker before
-        # index_documents() sends parse.requests — prevents missing replies.
-        time.sleep(3)
+        threading.Thread(target=self._consume_index_ready, daemon=True).start()
 
-    # ── Background consumers ───────────────────────────────────────────────────
+    # ── Background consumer ────────────────────────────────────────────────────
 
     def _consume_index_ready(self) -> None:
-        consumer = KafkaConsumer(
-            schemas.TOPIC_INDEX_READY,
-            bootstrap_servers=KAFKA_BOOTSTRAP,
-            group_id="orchestrator_index",
-            value_deserializer=lambda b: json.loads(b.decode()),
-            auto_offset_reset="latest",  # only messages from this run; prevents replaying old index.ready
-        )
-        for msg in consumer:
-            data = msg.value
+        log.info("index_ready consumer started")
+        while True:
+            data = schemas.pop(self._r_bg, schemas.Q_INDEX_READY)
+            if data is None:
+                continue
             self._index_ready[data["service"]].add(data["pdf_id"])
             log.info("index.ready: %s / %s", data["service"], data["pdf_id"])
             self._index_event.set()
 
-    def _consume_text_results(self) -> None:
-        consumer = KafkaConsumer(
-            schemas.TOPIC_RETRIEVE_TEXT_RES,
-            bootstrap_servers=KAFKA_BOOTSTRAP,
-            group_id="orchestrator_text_res",
-            value_deserializer=lambda b: json.loads(b.decode()),
-            auto_offset_reset="latest",
-        )
-        for msg in consumer:
-            data = msg.value
-            with self._pending_lock:
-                q = self._pending.get(data["correlation_id"], {}).get("text")
-            if q:
-                q.put(data["hits"])
-
-    def _consume_visual_results(self) -> None:
-        consumer = KafkaConsumer(
-            schemas.TOPIC_RETRIEVE_VIS_RES,
-            bootstrap_servers=KAFKA_BOOTSTRAP,
-            group_id="orchestrator_visual_res",
-            value_deserializer=lambda b: json.loads(b.decode()),
-            auto_offset_reset="latest",
-        )
-        for msg in consumer:
-            data = msg.value
-            with self._pending_lock:
-                q = self._pending.get(data["correlation_id"], {}).get("visual")
-            if q:
-                q.put(data["hits"])
-
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _already_indexed(self, pdf_ids: set[str]) -> set[str]:
-        """Return the subset of pdf_ids that already have vectors in Qdrant."""
         try:
-            qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+            qdrant   = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
             existing = {c.name for c in qdrant.get_collections().collections}
             if QDRANT_COLLECTION not in existing:
                 return set()
@@ -141,17 +94,17 @@ class Orchestrator:
             log.warning("Could not query Qdrant — assuming nothing is indexed", exc_info=True)
             return set()
 
+    # ── Public API ─────────────────────────────────────────────────────────────
+
     def index_documents(self, pdf_dir: Path) -> None:
-        """Index PDFs that are not yet in Qdrant; skip the rest."""
         pdfs = sorted(pdf_dir.glob("*.pdf"))
         if not pdfs:
             raise ValueError(f"No PDFs found in {pdf_dir.resolve()}")
 
-        expected  = {p.stem for p in pdfs}
-        cached    = self._already_indexed(expected)
-        to_index  = expected - cached
+        expected = {p.stem for p in pdfs}
+        cached   = self._already_indexed(expected)
+        to_index = expected - cached
 
-        # Pre-populate index_ready for PDFs already persisted in Qdrant/Byaldi
         for pdf_id in cached:
             self._index_ready["text"].add(pdf_id)
             self._index_ready["visual"].add(pdf_id)
@@ -165,11 +118,11 @@ class Orchestrator:
         log.info("Sending parse.requests for %d new PDF(s) …", len(to_index))
         for pdf in pdfs:
             if pdf.stem in to_index:
-                self._producer.send(
-                    schemas.TOPIC_PARSE_REQUESTS,
-                    schemas.parse_request(str(pdf.resolve()), pdf.stem),
-                )
-        self._producer.flush()
+                # parse.requests is consumed by BOTH parser and visual_indexer,
+                # so push two copies — one per consumer.
+                msg = schemas.parse_request(str(pdf.resolve()), pdf.stem)
+                schemas.push(self._r, schemas.Q_PARSE_REQUESTS, msg)
+                schemas.push(self._r, schemas.Q_PARSE_REQUESTS, msg)
 
         while True:
             self._index_event.wait(timeout=5)
@@ -185,28 +138,51 @@ class Orchestrator:
                 break
 
     def query(self, question: str) -> dict:
-        """Retrieve context from both indexers, then generate an answer via LLM."""
-        corr_id  = str(uuid.uuid4())
-        text_q:   queue.Queue = queue.Queue()
-        visual_q: queue.Queue = queue.Queue()
+        corr_id      = str(uuid.uuid4())
+        text_res_q   = f"res.text.{corr_id}"
+        visual_res_q = f"res.visual.{corr_id}"
+        log.info("Query [%s]: %s", corr_id[:8], question[:80])
 
-        with self._pending_lock:
-            self._pending[corr_id] = {"text": text_q, "visual": visual_q}
+        text_req   = schemas.retrieve_request(corr_id, question, TOP_K)
+        visual_req = schemas.retrieve_request(corr_id, question, TOP_K)
+        text_req["reply_to"]   = text_res_q
+        visual_req["reply_to"] = visual_res_q
 
-        req = schemas.retrieve_request(corr_id, question, TOP_K)
-        self._producer.send(schemas.TOPIC_RETRIEVE_TEXT_REQ, req)
-        self._producer.send(schemas.TOPIC_RETRIEVE_VIS_REQ,  req)
-        self._producer.flush()
+        schemas.push(self._r, schemas.Q_RETRIEVE_TEXT_REQ, text_req)
+        schemas.push(self._r, schemas.Q_RETRIEVE_VIS_REQ,  visual_req)
+        log.info("Retrieve requests pushed, waiting for results …")
 
-        try:
-            text_hits   = text_q.get(timeout=RETRIEVE_TIMEOUT)
-            visual_hits = visual_q.get(timeout=RETRIEVE_TIMEOUT)
-        except queue.Empty:
-            log.warning("Retrieval timeout for %s", corr_id)
-            text_hits, visual_hits = [], []
-        finally:
-            with self._pending_lock:
-                self._pending.pop(corr_id, None)
+        # Use two dedicated connections so both BRPOPs run concurrently in threads
+        import json
+        text_hits:   list = []
+        visual_hits: list = []
+        errors: list = []
+
+        def _wait_text():
+            r = redis.from_url(REDIS_URL, decode_responses=True)
+            res = r.brpop(text_res_q, timeout=RETRIEVE_TIMEOUT)
+            if res:
+                text_hits.extend(json.loads(res[1])["hits"])
+                log.info("Text results received (%d hits)", len(text_hits))
+            else:
+                log.warning("Text retrieval timeout")
+
+        def _wait_visual():
+            r = redis.from_url(REDIS_URL, decode_responses=True)
+            res = r.brpop(visual_res_q, timeout=RETRIEVE_TIMEOUT)
+            if res:
+                visual_hits.extend(json.loads(res[1])["hits"])
+                log.info("Visual results received (%d hits)", len(visual_hits))
+            else:
+                log.warning("Visual retrieval timeout")
+
+        t1 = threading.Thread(target=_wait_text)
+        t2 = threading.Thread(target=_wait_visual)
+        t1.start(); t2.start()
+        t1.join(timeout=RETRIEVE_TIMEOUT + 5)
+        t2.join(timeout=RETRIEVE_TIMEOUT + 5)
+
+        self._r.delete(text_res_q, visual_res_q)
 
         best_score = max(
             [h["score"] for h in text_hits]
@@ -216,10 +192,10 @@ class Orchestrator:
 
         if best_score < SIMILARITY_THRESHOLD:
             return {
-                "answer":            NO_INFO_MSG,
-                "retrieved_chunks":  [],
-                "visual_results":    [],
-                "best_score":        best_score,
+                "answer":           NO_INFO_MSG,
+                "retrieved_chunks": [],
+                "visual_results":   [],
+                "best_score":       best_score,
             }
 
         text_ctx = "\n\n---\n\n".join(h["text"] for h in text_hits)

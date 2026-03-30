@@ -1,14 +1,8 @@
-"""Text indexer service — two concurrent Kafka loops:
+"""Text indexer service — two concurrent loops:
   1. index_loop   : consumes parse.results → upserts chunks into Qdrant → produces index.ready
   2. retrieve_loop: consumes retrieve.text.requests → queries Qdrant → produces retrieve.text.results
-
-Persistence: vectors live in Qdrant backed by a Docker volume, so restarting
-the stack does NOT re-index PDFs that are already present in the collection.
-Each chunk is identified by a deterministic UUID derived from (pdf_id, text),
-making upserts idempotent.
 """
 import hashlib
-import json
 import logging
 import os
 import re
@@ -17,7 +11,7 @@ import threading
 import uuid
 
 import numpy as np
-from kafka import KafkaConsumer, KafkaProducer
+import redis
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams,
@@ -30,7 +24,7 @@ import shared.schemas as schemas
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [text_indexer] %(message)s")
 log = logging.getLogger(__name__)
 
-KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "kafka:9092")
+REDIS_URL       = os.environ.get("REDIS_URL",       "redis://redis:6379/0")
 QDRANT_HOST     = os.environ.get("QDRANT_HOST",     "qdrant")
 QDRANT_PORT     = int(os.environ.get("QDRANT_PORT", "6333"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
@@ -64,7 +58,6 @@ def _split_markdown(text: str, max_chars: int = CHUNK_MAX_CHARS) -> list[str]:
 
 
 def _chunk_id(pdf_id: str, text: str) -> str:
-    """Deterministic UUID — same chunk always maps to the same Qdrant point ID."""
     return str(uuid.UUID(hashlib.md5(f"{pdf_id}:{text}".encode()).hexdigest()))
 
 
@@ -102,13 +95,11 @@ class _TextIndex:
         if self._is_indexed(pdf_id):
             log.info("Skipping %s — already indexed in Qdrant", pdf_id)
             return 0
-
         full  = markdown + ("\n\n" + "\n\n".join(tables_md) if tables_md else "")
         texts = _split_markdown(full)
         embs  = self.model.encode(
             texts, normalize_embeddings=True, show_progress_bar=False
         ).astype(np.float32)
-
         points = [
             PointStruct(
                 id=_chunk_id(pdf_id, text),
@@ -123,12 +114,12 @@ class _TextIndex:
 
     def search(self, query: str, k: int = 3) -> list[dict]:
         q = self.model.encode([query], normalize_embeddings=True).astype(np.float32)
-        results = self.qdrant.search(
+        results = self.qdrant.query_points(
             collection_name=COLLECTION,
-            query_vector=q[0].tolist(),
+            query=q[0].tolist(),
             limit=k,
             with_payload=True,
-        )
+        ).points
         return [
             {"score": r.score, "text": r.payload["text"], "pdf_id": r.payload["pdf_id"]}
             for r in results
@@ -137,54 +128,42 @@ class _TextIndex:
 
 # ── Consumer loops ─────────────────────────────────────────────────────────────
 
-def _index_loop(idx: _TextIndex, producer: KafkaProducer) -> None:
-    consumer = KafkaConsumer(
-        schemas.TOPIC_PARSE_RESULTS,
-        bootstrap_servers=KAFKA_BOOTSTRAP,
-        group_id="text_indexer",
-        value_deserializer=lambda b: json.loads(b.decode()),
-        auto_offset_reset="earliest",
-    )
+def _index_loop(idx: _TextIndex, r: redis.Redis) -> None:
     log.info("index_loop ready")
-    for msg in consumer:
-        data = msg.value
+    while True:
+        data = schemas.pop(r, schemas.Q_PARSE_RESULTS)
+        if data is None:
+            continue
         n = idx.add(data["pdf_id"], data["markdown"], data["tables_md"])
-        producer.send(schemas.TOPIC_INDEX_READY, schemas.index_ready("text", data["pdf_id"]))
-        producer.flush()
+        schemas.push(r, schemas.Q_INDEX_READY, schemas.index_ready("text", data["pdf_id"]))
         log.info("%s: %s", data["pdf_id"],
                  f"indexed {n} new chunks" if n > 0 else "skipped (already in Qdrant)")
 
 
-def _retrieve_loop(idx: _TextIndex, producer: KafkaProducer) -> None:
-    consumer = KafkaConsumer(
-        schemas.TOPIC_RETRIEVE_TEXT_REQ,
-        bootstrap_servers=KAFKA_BOOTSTRAP,
-        group_id="text_indexer_retrieve",
-        value_deserializer=lambda b: json.loads(b.decode()),
-        auto_offset_reset="latest",
-    )
+def _retrieve_loop(idx: _TextIndex, r: redis.Redis) -> None:
     log.info("retrieve_loop ready")
-    for msg in consumer:
-        req  = msg.value
-        hits = idx.search(req["question"], k=req.get("top_k", 3))
-        producer.send(
-            schemas.TOPIC_RETRIEVE_TEXT_RES,
-            schemas.retrieve_text_result(req["correlation_id"], hits),
-        )
-        producer.flush()
+    while True:
+        req = schemas.pop(r, schemas.Q_RETRIEVE_TEXT_REQ)
+        if req is None:
+            continue
+        hits     = idx.search(req["question"], k=req.get("top_k", 3))
+        reply_to = req.get("reply_to", schemas.Q_RETRIEVE_TEXT_RES)
+        schemas.push(r, reply_to,
+                     schemas.retrieve_text_result(req["correlation_id"], hits))
 
 
 def main() -> None:
+    r_main    = redis.from_url(REDIS_URL, decode_responses=True)
+    r_index   = redis.from_url(REDIS_URL, decode_responses=True)
+    r_retrieve = redis.from_url(REDIS_URL, decode_responses=True)
+    r_main.delete(schemas.Q_PARSE_RESULTS, schemas.Q_INDEX_READY,
+                  schemas.Q_RETRIEVE_TEXT_REQ, schemas.Q_RETRIEVE_TEXT_RES)
     qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
     idx    = _TextIndex(EMBEDDING_MODEL, qdrant)
 
-    producer = KafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP,
-        value_serializer=lambda v: json.dumps(v).encode(),
-    )
     threads = [
-        threading.Thread(target=_index_loop,    args=(idx, producer), daemon=True),
-        threading.Thread(target=_retrieve_loop, args=(idx, producer), daemon=True),
+        threading.Thread(target=_index_loop,    args=(idx, r_index),    daemon=True),
+        threading.Thread(target=_retrieve_loop, args=(idx, r_retrieve), daemon=True),
     ]
     for t in threads:
         t.start()

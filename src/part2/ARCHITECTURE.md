@@ -5,8 +5,8 @@
 The system answers natural-language questions about scientific PDFs by combining
 two complementary retrieval strategies with a multimodal LLM generator:
 
-- **Text retrieval** — sentence-transformers embeddings stored in a FAISS index
-  capture explicit content (tables, methods, results).
+- **Text retrieval** — sentence-transformers embeddings stored in a Qdrant vector
+  store capture explicit content (tables, methods, results).
 - **Visual retrieval** — ColQwen2-2B via Byaldi indexes page images as visual
   patches, capturing content invisible to text embeddings (figures, chemical
   schemes, epidemiological maps).
@@ -18,7 +18,7 @@ OpenAI-compatible REST API, so the generator is backend-agnostic.
 
 ---
 
-## Why Docker + Kafka?
+## Why Docker + Redis?
 
 The two retrieval libraries have **mutually incompatible `transformers` pins**:
 
@@ -30,8 +30,9 @@ The two retrieval libraries have **mutually incompatible `transformers` pins**:
 | `orchestrator`  | openai client only    | no conflict                     |
 
 Each service runs in its own container with its own Python environment, and they
-communicate exclusively through **Kafka topics** — no shared memory, no
-conflicting imports.
+communicate exclusively through **Redis Lists** (LPUSH / BRPOP FIFO queues) —
+no shared memory, no conflicting imports.  Redis requires zero configuration
+beyond `redis-server --appendonly yes`.
 
 ---
 
@@ -41,9 +42,9 @@ conflicting imports.
 src/part2/
 ├── ARCHITECTURE.md          ← this file
 ├── README.md                ← task specification
-├── docker-compose.yml       ← spins up Kafka + all four services + Ollama
+├── docker-compose.yml       ← spins up Redis + all four services + Ollama
 │
-├── shared/                  ← Kafka topic names and message constructors
+├── shared/                  ← Redis queue names and message constructors
 │   ├── __init__.py
 │   └── schemas.py           ← imported by every service via PYTHONPATH=/app
 │
@@ -51,12 +52,12 @@ src/part2/
 │   ├── parser/
 │   │   ├── Dockerfile       ← nvidia/cuda base; transformers>=4.48
 │   │   ├── requirements.txt
-│   │   └── main.py          ← Kafka consumer/producer wrapping Docling
+│   │   └── main.py          ← Redis consumer/producer wrapping Docling
 │   │
 │   ├── text_indexer/
 │   │   ├── Dockerfile       ← python:3.12-slim; no GPU required
 │   │   ├── requirements.txt
-│   │   └── main.py          ← FAISS index + sentence-transformers
+│   │   └── main.py          ← Qdrant index + sentence-transformers
 │   │
 │   ├── visual_indexer/
 │   │   ├── Dockerfile       ← nvidia/cuda base; transformers>=4.47,<4.48
@@ -93,26 +94,27 @@ tests/part2/
 
 ---
 
-## Kafka Topics
+## Redis Queues
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ Topic                     Producer         Consumer(s)                      │
+│ Queue                     Producer         Consumer(s)                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ parse.requests            orchestrator     parser, visual_indexer           │
 │ parse.results             parser           text_indexer                     │
 │ index.ready               text_indexer,    orchestrator                     │
 │                           visual_indexer                                    │
 │ retrieve.text.requests    orchestrator     text_indexer                     │
-│ retrieve.text.results     text_indexer     orchestrator                     │
+│ res.text.<corr_id>        text_indexer     orchestrator (per-query list)    │
 │ retrieve.visual.requests  orchestrator     visual_indexer                   │
-│ retrieve.visual.results   visual_indexer   orchestrator                     │
+│ res.visual.<corr_id>      visual_indexer   orchestrator (per-query list)    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Message schemas are defined in [shared/schemas.py](shared/schemas.py).
-Every message is a JSON-serialised dict; the constructor names document the
-field names expected by each consumer.
+All queues use LPUSH (producer) + BRPOP (consumer) for strict FIFO ordering.
+Query result queues are ephemeral per-correlation Redis lists; the orchestrator
+deletes them after receiving both results.  Message schemas are defined in
+[shared/schemas.py](shared/schemas.py).
 
 ---
 
@@ -191,11 +193,11 @@ question
 ### `orchestrator`
 
 - **Base image:** `python:3.12-slim`
-- **Key deps:** `kafka-python>=2.0`, `openai>=1.0`
-- **Background threads:** `_consume_index_ready`, `_consume_text_results`,
-  `_consume_visual_results`
-- **Query correlation:** each query gets a `uuid4` correlation ID; result queues
-  are registered before sending retrieve requests and cleaned up after receipt.
+- **Key deps:** `redis>=5.0`, `openai>=1.0`, `qdrant-client>=1.9`
+- **Background thread:** `_consume_index_ready` (BRPOP loop on `index.ready`)
+- **Query correlation:** each query gets a `uuid4` correlation ID; results are
+  delivered to ephemeral per-correlation Redis lists (`res.text.<id>` /
+  `res.visual.<id>`) and deleted after receipt.
 
 ---
 
@@ -205,7 +207,7 @@ Services are configured via environment variables in `docker-compose.yml`:
 
 | Variable              | Service       | Default                        |
 |-----------------------|---------------|--------------------------------|
-| `KAFKA_BOOTSTRAP`     | all           | `kafka:9092`                   |
+| `REDIS_URL`           | all           | `redis://redis:6379/0`         |
 | `DPI`                 | parser        | `300`                          |
 | `EMBEDDING_MODEL`     | text_indexer  | `all-MiniLM-L6-v2`             |
 | `CHUNK_MAX_CHARS`     | text_indexer  | `800`                          |
@@ -225,7 +227,7 @@ Services are configured via environment variables in `docker-compose.yml`:
 | `parser`          | indexing only   | ~4–5 GB     | Docling layout + OCR models         |
 | `visual_indexer`  | indexing + query| ~3–4 GB     | ColQwen2-2B; add 4-bit quant to halve|
 | `ollama` (Gemma)  | query only      | ~2.5 GB     | `q4_K_M` quantisation               |
-| `text_indexer`    | always          | CPU only    | FAISS runs on CPU                   |
+| `text_indexer`    | always          | CPU only    | Qdrant runs on CPU                  |
 | `orchestrator`    | always          | CPU only    | No ML models                        |
 
 Parser and Ollama are naturally time-separated (indexing vs generation), so peak
@@ -248,7 +250,8 @@ docker run --rm -v rag-part2_pdf-data:/data/pdfs \
   -v $(pwd)/src/part2/example_data:/src:ro \
   alpine sh -c "ls /src/*.pdf | head -2 | xargs -I{} cp -v {} /data/pdfs/"
 ```
-# You can later clean the files with: docker run --rm -v rag-part2_pdf-data:/data/pdfs
+
+You can later clean the files with: docker run --rm -v rag-part2_pdf-data:/data/pdfs
 
 ### Start all services
 

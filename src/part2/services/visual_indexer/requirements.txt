@@ -1,4 +1,4 @@
-kafka-python>=2.0
+redis>=5.0
 byaldi>=0.0.6
 colpali-engine>=0.3.8
 transformers>=4.47.0,<4.48.0

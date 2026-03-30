@@ -1,35 +1,43 @@
-"""Kafka topic names and JSON message schemas for inter-service communication.
+"""Redis queue names and JSON message schemas for inter-service communication.
 
-Every Kafka message is a JSON-serialised dict.  The constructors below document
-the exact shape expected by each consumer; add/remove fields here and update the
-corresponding service to keep both sides in sync.
+Every message is a JSON-serialised dict pushed with LPUSH and consumed with
+BRPOP (blocking) or RPOP (non-blocking).  The constructors below document the
+exact shape expected by each consumer.
 """
 
-# ── Topic names ────────────────────────────────────────────────────────────────
+# ── Queue names ────────────────────────────────────────────────────────────────
 
 # Indexing pipeline
-TOPIC_PARSE_REQUESTS = "parse.requests"   # orchestrator → parser, visual_indexer
-TOPIC_PARSE_RESULTS  = "parse.results"    # parser        → text_indexer
-TOPIC_INDEX_READY    = "index.ready"      # text_indexer, visual_indexer → orchestrator
+Q_PARSE_REQUESTS = "parse.requests"   # orchestrator → parser, visual_indexer
+Q_PARSE_RESULTS  = "parse.results"    # parser        → text_indexer
+Q_INDEX_READY    = "index.ready"      # text_indexer, visual_indexer → orchestrator
 
 # Query pipeline
-TOPIC_RETRIEVE_TEXT_REQ = "retrieve.text.requests"    # orchestrator  → text_indexer
-TOPIC_RETRIEVE_TEXT_RES = "retrieve.text.results"     # text_indexer  → orchestrator
-TOPIC_RETRIEVE_VIS_REQ  = "retrieve.visual.requests"  # orchestrator  → visual_indexer
-TOPIC_RETRIEVE_VIS_RES  = "retrieve.visual.results"   # visual_indexer → orchestrator
-
-ALL_TOPICS = [
-    TOPIC_PARSE_REQUESTS,
-    TOPIC_PARSE_RESULTS,
-    TOPIC_INDEX_READY,
-    TOPIC_RETRIEVE_TEXT_REQ,
-    TOPIC_RETRIEVE_TEXT_RES,
-    TOPIC_RETRIEVE_VIS_REQ,
-    TOPIC_RETRIEVE_VIS_RES,
-]
+Q_RETRIEVE_TEXT_REQ = "retrieve.text.requests"    # orchestrator  → text_indexer
+Q_RETRIEVE_TEXT_RES = "retrieve.text.results"     # text_indexer  → orchestrator
+Q_RETRIEVE_VIS_REQ  = "retrieve.visual.requests"  # orchestrator  → visual_indexer
+Q_RETRIEVE_VIS_RES  = "retrieve.visual.results"   # visual_indexer → orchestrator
 
 
 # ── Message constructors ───────────────────────────────────────────────────────
+
+# ── Helpers ───────────────────────────────────────────────────────────────────────────
+
+import json
+
+
+def push(redis_client, queue: str, payload: dict) -> None:
+    """Serialize payload and push to the left end of a Redis list (LPUSH)."""
+    redis_client.lpush(queue, json.dumps(payload))
+
+
+def pop(redis_client, queue: str, timeout: int = 0) -> dict | None:
+    """Blocking right-pop (BRPOP) from a Redis list.  Returns None on timeout."""
+    result = redis_client.brpop(queue, timeout=timeout)
+    return json.loads(result[1]) if result else None
+
+
+# ── Message constructors ────────────────────────────────────────────────────────────────
 
 def parse_request(pdf_path: str, pdf_id: str) -> dict:
     """orchestrator → parser, visual_indexer"""

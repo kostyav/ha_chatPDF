@@ -5,16 +5,15 @@
 #   parser, visual_indexer, and ollama all request the GPU.
 #   They are naturally time-separated: parser runs during indexing,
 #   visual_indexer is idle during parsing, ollama runs only during generation.
-#   For multi-GPU deployments, assign device IDs explicitly via device_ids.
 
 name: rag-part2
 
 volumes:
-  pdf-data:          # PDFs mounted into parser + visual_indexer (read-only consumer side)
-  parsed-docs:       # Docling output (page images) written by parser
-  byaldi-index:      # ColQwen2 index files written by visual_indexer
-  qdrant-data:       # Qdrant vector store — persists across docker compose up/down
-  kafka-data:
+  pdf-data:
+  parsed-docs:
+  byaldi-index:
+  qdrant-data:
+  redis-data:
 
 networks:
   rag-net:
@@ -23,32 +22,18 @@ services:
 
   # ── Infrastructure ───────────────────────────────────────────────────────────
 
-  kafka:
-    image: confluentinc/cp-kafka:7.6.0
-    environment:
-      # KRaft mode — no Zookeeper required
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
     volumes:
-      - kafka-data:/var/lib/kafka/data
+      - redis-data:/data
     networks: [rag-net]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9092' 2>/dev/null"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
+      timeout: 3s
+      retries: 10
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -82,10 +67,10 @@ services:
       context: .
       dockerfile: services/parser/Dockerfile
     depends_on:
-      kafka:
+      redis:
         condition: service_healthy
     environment:
-      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_URL: redis://redis:6379/0
       PARSED_DIR: /data/parsed
       DPI: "300"
     volumes:
@@ -106,12 +91,12 @@ services:
       context: .
       dockerfile: services/text_indexer/Dockerfile
     depends_on:
-      kafka:
+      redis:
         condition: service_healthy
       qdrant:
         condition: service_healthy
     environment:
-      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_URL: redis://redis:6379/0
       QDRANT_HOST: qdrant
       QDRANT_PORT: "6333"
       EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
@@ -124,10 +109,10 @@ services:
       context: .
       dockerfile: services/visual_indexer/Dockerfile
     depends_on:
-      kafka:
+      redis:
         condition: service_healthy
     environment:
-      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_URL: redis://redis:6379/0
       COLQWEN_MODEL: vidore/colqwen2-v0.1
       INDEX_DIR: /data/byaldi_index
     volumes:
@@ -148,10 +133,10 @@ services:
       context: .
       dockerfile: services/orchestrator/Dockerfile
     depends_on:
-      kafka:
+      redis:
         condition: service_healthy
     environment:
-      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_URL: redis://redis:6379/0
       QDRANT_HOST: qdrant
       QDRANT_PORT: "6333"
       LLM_BASE_URL: http://ollama:11434/v1
