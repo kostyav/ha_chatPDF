@@ -129,6 +129,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       COLQWEN_MODEL: vidore/colqwen2-v0.1
+      INDEX_DIR: /data/byaldi_index
     volumes:
       - pdf-data:/data/pdfs:ro
       - byaldi-index:/data/byaldi_index
@@ -151,6 +152,8 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
       LLM_BASE_URL: http://ollama:11434/v1
       LLM_MODEL: gemma3:4b
       SIMILARITY_THRESHOLD: "0.3"

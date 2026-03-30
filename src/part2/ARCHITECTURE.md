@@ -242,7 +242,7 @@ GPU usage stays around 4–5 GB on a single T4.
 docker compose up -d ollama
 docker compose exec ollama ollama pull gemma3:4b
 
-# Copy N or 2  PDFs into the shared volume. Do not move all 10: it takes time on weakn machine
+# Copy N or 2  PDFs into the shared volume. Do not move all 10: it takes time on weak machine
 docker volume create rag-part2_pdf-data
 docker run --rm -v rag-part2_pdf-data:/data/pdfs \
   -v $(pwd)/src/part2/example_data:/src:ro \

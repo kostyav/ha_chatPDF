@@ -16,11 +16,14 @@ import os
 import queue
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from kafka import KafkaConsumer, KafkaProducer
 from openai import OpenAI
+from qdrant_client import QdrantClient
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 sys.path.insert(0, "/app")
 import shared.schemas as schemas
@@ -29,6 +32,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [orchestrator] %(mes
 log = logging.getLogger(__name__)
 
 KAFKA_BOOTSTRAP      = os.environ.get("KAFKA_BOOTSTRAP",      "kafka:9092")
+QDRANT_HOST          = os.environ.get("QDRANT_HOST",          "qdrant")
+QDRANT_PORT          = int(os.environ.get("QDRANT_PORT",      "6333"))
+QDRANT_COLLECTION    = "rag_chunks"
 LLM_BASE_URL         = os.environ.get("LLM_BASE_URL",         "http://ollama:11434/v1")
 LLM_MODEL            = os.environ.get("LLM_MODEL",            "gemma3:4b")
 SIMILARITY_THRESHOLD = float(os.environ.get("SIMILARITY_THRESHOLD", "0.3"))
@@ -60,6 +66,9 @@ class Orchestrator:
             self._consume_visual_results,
         ):
             threading.Thread(target=target, daemon=True).start()
+        # Give consumers time to connect and register with the broker before
+        # index_documents() sends parse.requests — prevents missing replies.
+        time.sleep(3)
 
     # ── Background consumers ───────────────────────────────────────────────────
 
@@ -69,7 +78,7 @@ class Orchestrator:
             bootstrap_servers=KAFKA_BOOTSTRAP,
             group_id="orchestrator_index",
             value_deserializer=lambda b: json.loads(b.decode()),
-            auto_offset_reset="earliest",
+            auto_offset_reset="latest",  # only messages from this run; prevents replaying old index.ready
         )
         for msg in consumer:
             data = msg.value
@@ -109,19 +118,57 @@ class Orchestrator:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
+    def _already_indexed(self, pdf_ids: set[str]) -> set[str]:
+        """Return the subset of pdf_ids that already have vectors in Qdrant."""
+        try:
+            qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+            existing = {c.name for c in qdrant.get_collections().collections}
+            if QDRANT_COLLECTION not in existing:
+                return set()
+            found = set()
+            for pdf_id in pdf_ids:
+                results, _ = qdrant.scroll(
+                    collection_name=QDRANT_COLLECTION,
+                    scroll_filter=Filter(must=[
+                        FieldCondition(key="pdf_id", match=MatchValue(value=pdf_id))
+                    ]),
+                    limit=1,
+                )
+                if results:
+                    found.add(pdf_id)
+            return found
+        except Exception:
+            log.warning("Could not query Qdrant — assuming nothing is indexed", exc_info=True)
+            return set()
+
     def index_documents(self, pdf_dir: Path) -> None:
-        """Send parse.requests for all PDFs; block until both indices confirm every PDF."""
+        """Index PDFs that are not yet in Qdrant; skip the rest."""
         pdfs = sorted(pdf_dir.glob("*.pdf"))
         if not pdfs:
             raise ValueError(f"No PDFs found in {pdf_dir.resolve()}")
 
-        expected = {p.stem for p in pdfs}
-        log.info("Sending parse.requests for %d PDFs …", len(pdfs))
+        expected  = {p.stem for p in pdfs}
+        cached    = self._already_indexed(expected)
+        to_index  = expected - cached
+
+        # Pre-populate index_ready for PDFs already persisted in Qdrant/Byaldi
+        for pdf_id in cached:
+            self._index_ready["text"].add(pdf_id)
+            self._index_ready["visual"].add(pdf_id)
+        if cached:
+            log.info("Skipping %d already-indexed PDF(s): %s", len(cached), sorted(cached))
+
+        if not to_index:
+            log.info("All PDFs already indexed — skipping parse pipeline")
+            return
+
+        log.info("Sending parse.requests for %d new PDF(s) …", len(to_index))
         for pdf in pdfs:
-            self._producer.send(
-                schemas.TOPIC_PARSE_REQUESTS,
-                schemas.parse_request(str(pdf.resolve()), pdf.stem),
-            )
+            if pdf.stem in to_index:
+                self._producer.send(
+                    schemas.TOPIC_PARSE_REQUESTS,
+                    schemas.parse_request(str(pdf.resolve()), pdf.stem),
+                )
         self._producer.flush()
 
         while True:

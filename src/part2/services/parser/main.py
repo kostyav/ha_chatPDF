@@ -55,6 +55,11 @@ def main() -> None:
         group_id="parser",
         value_deserializer=lambda b: json.loads(b.decode()),
         auto_offset_reset="earliest",
+        # Docling can take 2+ min per PDF — prevent the broker from evicting
+        # the consumer before it can commit the offset.
+        session_timeout_ms=60_000,
+        heartbeat_interval_ms=20_000,
+        max_poll_interval_ms=900_000,  # 15 min ceiling
     )
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP,
