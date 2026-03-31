@@ -18,4 +18,5 @@ def test_hello_world(default_config_path, request):
     )
     reply = response.choices[0].message.content
     assert reply and len(reply.strip()) > 0, "Expected a non-empty response"
+    assert "hello world" in reply.strip().lower(), f"Expected 'Hello World' in response, got: {reply!r}"
     print(f"\nModel replied: {reply}")
