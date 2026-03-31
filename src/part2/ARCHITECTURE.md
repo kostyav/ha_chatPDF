@@ -67,7 +67,8 @@ src/part2/
 │   └── orchestrator/
 │       ├── Dockerfile       ← python:3.12-slim; no GPU required
 │       ├── requirements.txt
-│       └── main.py          ← pipeline coordinator + CLI
+│       ├── main.py          ← indexing pipeline coordinator (CMD of the service)
+│       └── query.py         ← standalone query client (run separately with -it)
 │
 ├── config/                  ← LLM engine configs (used by orchestrator env vars)
 │   ├── config.yaml          ← ACTIVE config
@@ -190,14 +191,25 @@ question
 - **Produces:** `index.ready`, `retrieve.visual.results`
 - **Volume:** `/data/pdfs` (read-only), `/data/byaldi_index` (index storage)
 
-### `orchestrator`
+### `orchestrator` (`main.py`)
 
 - **Base image:** `python:3.12-slim`
-- **Key deps:** `redis>=5.0`, `openai>=1.0`, `qdrant-client>=1.9`
+- **Key deps:** `redis>=5.0`, `qdrant-client>=1.9`
+- **Role:** indexing-only coordinator — pushes `parse.requests`, waits for all
+  `index.ready` signals, then exits.
 - **Background thread:** `_consume_index_ready` (BRPOP loop on `index.ready`)
+
+### `query.py` (standalone client)
+
+- **Same image** as orchestrator (copied into the container at build time)
+- **Key deps:** `redis>=5.0`, `openai>=1.0`
+- **Role:** query-only client — pushes `retrieve.text.requests` /
+  `retrieve.visual.requests`, collects results, calls LLM.  Never touches
+  indexing queues or flushes any Redis keys.
 - **Query correlation:** each query gets a `uuid4` correlation ID; results are
   delivered to ephemeral per-correlation Redis lists (`res.text.<id>` /
   `res.visual.<id>`) and deleted after receipt.
+- **Run with:** `docker compose run --rm -it orchestrator python query.py`
 
 ---
 
@@ -239,10 +251,14 @@ GPU usage stays around 4–5 GB on a single T4.
 
 ### Prerequisites
 
+Per-engine configs are in `src/part2/config/`.
+
+### 3. Pull the Ollama model
+
 ```bash
 # Start Ollama, then pull the model into the running container
-docker compose up -d ollama
-docker compose exec ollama ollama pull gemma3:4b
+docker compose -f src/part2/docker-compose.yml up -d ollama
+docker compose -f src/part2/docker-compose.yml exec ollama ollama pull gemma3:4b
 
 # Copy N or 2  PDFs into the shared volume. Do not move all 10: it takes time on weak machine
 docker volume create rag-part2_pdf-data
@@ -260,17 +276,17 @@ cd src/part2
 docker compose up --build
 ```
 
-### Run a query via the orchestrator CLI
+### Run a query
+
+`main.py` handles indexing only. Use `query.py` for querying:
 
 ```bash
+# Interactive REPL (requires -it for stdin)
+docker compose run --rm -it orchestrator python query.py
+
+# Single question
 docker compose run --rm orchestrator \
-  python main.py --question "Which section describes Fig. 4?"
-```
-
-### Interactive REPL
-
-```bash
-docker compose run --rm -it orchestrator python main.py
+  python query.py --question "Which section describes Fig. 4?"
 ```
 
 ### Switch LLM backend

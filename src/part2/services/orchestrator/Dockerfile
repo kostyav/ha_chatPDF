@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY shared/ shared/
 COPY services/orchestrator/main.py main.py
+COPY services/orchestrator/query.py query.py
 
 ENV PYTHONPATH=/app
 
