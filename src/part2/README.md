@@ -1,101 +1,218 @@
-# PART2 
+# Part 2 — Multimodal RAG System
 
-## Task: 
-This project implements a Retrieval-Augmented Generation (RAG) system designed to answer natural language questions from a subset of the VisualMRC dataset. It is specifically optimized to handle PDFs containing text, tables, and technical drawings (e.g., chemical synthesis schemes, epidemiological maps) using a T4 GPU (16GB VRAM). Implement a lightweight RAG system to provide the model with domain-specific knowledge.
+## Task
 
+Build a lightweight RAG system that answers natural-language questions from the
+[VisualMRC dataset](https://arxiv.org/pdf/2304.06447) using PDFs that contain
+text, tables, and technical drawings (chemical synthesis schemes, epidemiological
+maps).  Optimised for a T4 GPU (16 GB VRAM).
+
+---
 
 ## Core Stack
-Parser: Docling (Layout-aware extraction of tables and figures).
 
-Retriever: ColQwen2-2B via Byaldi (Visual-semantic embeddings).
+| Role | Technology |
+|------|-----------|
+| Parser | Docling ≥ 2.28 — layout-aware extraction; exports tables as Markdown, pages as images |
+| Text retriever | sentence-transformers `all-MiniLM-L6-v2` + Qdrant vector store |
+| Visual retriever | ColQwen2-2B via Byaldi — indexes page-image patches |
+| Generator | Gemma 3 4B (`q4_K_M` GGUF) via Ollama / llama.cpp / vLLM |
+| Message queue | Redis 7 (LPUSH / BRPOP FIFO) |
 
-Generator: Gemma 3 4B (Multimodal LLM for reasoning).
+The inference engine is **configurable at deploy time** — all three backends
+expose an OpenAI-compatible `/v1/chat/completions` endpoint, so no code changes
+are needed to switch between them.
 
-Inference Engine: Ollama or vLLM or llamaCPP
+---
 
-## Model Options: 
-Use an open-source embedding model.The list is not final and new models can be added later during production
+## Dataset
 
-[sentence-transformers/all-MiniLM-L6-v2, BAAI/bge-small-en-v1.5]
+| Item | Location |
+|------|----------|
+| 10 source PDFs | `src/part2/example_data/*.pdf` |
+| Ground-truth Q&A | `src/part2/example_data/train_dataframe_subset.csv` |
 
-The Dataset: Create or find a small dataset to use for the RAG. This could be technical documentation, a whitepaper, or a product manual. The content should be concise, totalling roughly 2 to 10 pages of text.
+Source: [Kaggle PdfVQA competition](https://www.kaggle.com/competitions/pdfvqa/overview),
+ArXiv 2304.06447.
 
-## Deliverables: 
-The dataset used.
-The complete RAG code
-A test log showing a user query and the corresponding text chunks retrieved from memory.
+---
 
+## Deliverables
 
-## Dataset Structure
-Source: 10 PDF files in "example_data" folder
+### 1. Dataset
+10 PDFs from the VisualMRC dataset in `example_data/`.  Ground truth in
+`train_dataframe_subset.csv` (columns: `question`, `answer`, `pmcid`).
 
-Ground Truth: A train_dataframe_subset.csv in "example_data" folder file containing question, answer, and source_pdf mappings.
+### 2. Complete RAG code
+Microservices architecture in `services/` — see [ARCHITECTURE.md](ARCHITECTURE.md).
+Single-process fallback in `rag/` for local development and unit tests.
 
-This file contains NL questions and answers for PDF files. These questions and files are from open dataset: https://www.kaggle.com/competitions/pdfvqa/overview. You can find the description of this dataset in: https://arxiv.org/pdf/2304.06447.
+### 3. Retrieval log
 
-Code Generation Instructions
-1. Document Parsing (Docling)
-The model must use Docling to process the PDF. Unlike standard PDF readers, Docling should be configured to:
+Every query issued through `query.py` automatically appends one JSON line to
+`/data/logs/retrieval_log.jsonl` (persisted in the `query-logs` Docker volume):
 
-Identify and export tables as Markdown (e.g., the antimicrobial activity tables in 23870758.pdf).
+```json
+{
+  "timestamp": "2026-03-31T11:11:38Z",
+  "query": "Which section describes Fig. 4?",
+  "best_score": 0.240,
+  "chunks": [
+    {"score": 0.240, "pdf_id": "23870758", "text": "…full chunk text…"}
+  ],
+  "images": ["/data/logs/images/f7c44538_doc0_page3.png"]
+}
+```
 
-Identify figures/schemes and save them as high-resolution images for the multimodal generator.
+For queries that score **below the similarity threshold** the entry is still
+written with `chunks: []` and `images: []`.
 
-2. Multimodal Indexing (Byaldi + ColQwen2)
-The retriever must use ColQwen2-2B to index the visual layout of each page.
+A **PDF report** can be generated from the log at any time — see [Generating the
+PDF report](#generating-the-pdf-report) below.
 
-Why: Technical schemes (like the smallpox eradication flow in 24069913.pdf) are often not captured by text embeddings. ColQwen2 indexes the "patches" of the image.
+A **pytest suite** for the log is in `tests/part2/test_retrieval_log.py`:
 
-Implementation: Use Byaldi to create a local vector store.
+```bash
+pytest tests/part2/test_retrieval_log.py               # unit tests (no server)
+pytest tests/part2/test_retrieval_log.py -m integration # writes retrieval_log.json
+```
 
-3. RAG Interaction Logic
-For each question in the CSV:
+---
 
-Retrieve: Query the Byaldi index to find the top-K most relevant page images.
+## How to Run
 
-Context Construction: Combine the question with the retrieved page images and the Markdown text extracted by Docling.
+### 1. Configure the LLM engine
 
-Generation: Send the image + text context to Gemma 3 4B.
+Edit `src/part2/config/config.yaml`:
 
-Verification: If the similarity score from Byaldi is below a defined threshold, the system must output: "The document does not contain information about this query."
+```yaml
+engine: ollama          # ollama | llamacpp | vllm
+model: gemma3:4b
+quantization: q4_K_M
+embedding_model: sentence-transformers/all-MiniLM-L6-v2
+```
 
-4. Vector Store: Implement an in-memory vector store using FAISS or ChromaDB.
+Per-engine example configs are in `src/part2/config/`.
 
-Flow: Create a logic gate that takes a user query, embeds it, retrieves the top 3 relevant chunks, and injects them into the LLM prompt.
+### 2. Pull the Ollama model
 
+```bash
+docker compose -f src/part2/docker-compose.yml up -d ollama
+docker compose -f src/part2/docker-compose.yml exec ollama ollama pull gemma3:4b
+```
 
-5. GPU Optimization (T4 16GB)
-To prevent Out-of-Memory (OOM) errors:
+### 3. Copy PDFs into the shared volume
 
-Load ColQwen2-2B in 4-bit quantization.
+```bash
+docker volume create rag-part2_pdf-data
+docker run --rm \
+  -v rag-part2_pdf-data:/data/pdfs \
+  -v $(pwd)/src/part2/example_data:/src:ro \
+  alpine sh -c "ls /src/*.pdf | head -2 | xargs -I{} cp -v {} /data/pdfs/"
+```
 
-Run Gemma 3 4B via Ollama using the q4_K_M GGUF format (~2.5GB VRAM).
+> Start with 2 PDFs on a weak machine — indexing all 10 takes significant time.
 
-Limit image resolution to 300 DPI to balance visual clarity with memory overhead.
+### 4. Start all services (indexes PDFs, then stays ready)
 
-Example Interaction Flow
-Input Question: "What is the yield percentage of compound 12 in Toluene?"
+```bash
+cd src/part2
+docker compose up --build
+```
 
-Retrieval: Byaldi identifies Table 7 on Page 6 of 23870758.pdf visually.
+The orchestrator indexes all PDFs and exits.  The other services (redis, qdrant,
+text\_indexer, visual\_indexer, ollama) remain running.
 
-Reasoning: Gemma 3 analyzes the Markdown table provided in the prompt context.
+### 5. Run queries
 
-Output: "The yield for compound 12 in Toluene is 92%."
+```bash
+# Interactive REPL
+docker compose run --rm -it orchestrator python query.py
 
-## Evaluation Script Requirements
-Generate a script that iterates through the CSV, compares the system-generated answer to the ground truth using a metric like BERTScore, and logs instances where visual schemes were required for the correct answer.
+# Single question
+docker compose run --rm orchestrator \
+  python query.py --question "Which section describes Fig. 4?"
+```
 
+Each query prints the answer, best score, retrieved text chunks, and the paths of
+any saved page images.  All results are also appended to `retrieval_log.jsonl`.
 
-## Constrains and rules for code generation:
-1. It is still unknown what inference engine will be used at production stage. 
-The general abstraction must be created that during the init process selects one of the 3 engines. 
-So each engine must be separately loaded with its corresponding config.
+### 6. Generating the PDF report
 
-2. Neither the model itself not its quantization are known and must be obtained from the config file during the "deployment script" call.
+```bash
+docker compose run --rm orchestrator python report.py
+```
 
-3. The verification script from the "Deliverables" must be created in tests/part1 folder.
+This reads `/data/logs/retrieval_log.jsonl` and writes `/data/logs/report.pdf`
+— one page per query, showing the question, retrieved chunks, and inline page
+images.
 
-4. More tests must be created to verify different configurations of inference engine, model and quantization.
+Copy outputs to the host:
 
-5. All the code (LOC) must be kept as minimal as possible. Use 3rd party libraries as much as possible to minimize the LOC.
-The code must be kept in src/part2 folder. Add more subfolders to keep the layout clean and simple
+```bash
+docker run --rm \
+  -v rag-part2_query-logs:/data/logs \
+  -v $(pwd):/out \
+  alpine sh -c "cp /data/logs/report.pdf /out/ && cp -r /data/logs/images /out/"
+```
+
+### 7. Run tests
+
+```bash
+pytest tests/part2 -m "not integration"   # unit tests — no server needed
+pytest tests/part2 -m integration         # requires live Ollama server
+```
+
+---
+
+## Switching the LLM backend
+
+Override `LLM_BASE_URL` and `LLM_MODEL` at runtime:
+
+```bash
+LLM_BASE_URL=http://vllm:8000/v1 LLM_MODEL=google/gemma-3-4b-it \
+  docker compose up orchestrator
+```
+
+---
+
+## Single-process mode (no Docker)
+
+The `rag/` module runs everything in one process — useful for development and
+unit tests without the full service stack.  Requires Ollama running locally.
+
+```bash
+pip install -r src/part2/requirements.txt && pip install -e .
+ollama serve && ollama pull gemma3:4b
+
+python -m src.part2.rag.pipeline \
+  --pdf-dir src/part2/example_data \
+  --question "Which section describes Fig. 4?"
+```
+
+---
+
+## Evaluation
+
+```bash
+python src/part2/evaluate.py \
+  --csv  src/part2/example_data/train_dataframe_subset.csv \
+  --pdf-dir src/part2/example_data \
+  --output eval_results.json
+```
+
+Iterates every row in the CSV, runs the RAG pipeline, and scores answers with
+BERTScore F1 against ground truth.  Results are written to `eval_results.json`.
+
+---
+
+## GPU Memory Budget (T4 16 GB)
+
+| Service | When active | VRAM |
+|---------|------------|------|
+| parser (Docling) | indexing only | ~4–5 GB |
+| visual\_indexer (ColQwen2) | indexing + query | ~3–4 GB |
+| ollama (Gemma 3 4B) | query only | ~2.5 GB |
+| text\_indexer + Qdrant | always | CPU only |
+
+Parser and Ollama are naturally time-separated, so peak GPU usage is ~4–5 GB.

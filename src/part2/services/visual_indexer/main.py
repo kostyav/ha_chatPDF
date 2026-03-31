@@ -67,11 +67,12 @@ class _VisualIndex:
                 return False
             model = self._get_model()
             if self._has_existing or self._indexed:
-                model.add_to_index(pdf_path, store_collection_with_index=False)
+                model.add_to_index(pdf_path, store_collection_with_index=True)
             else:
                 model.index(
                     pdf_path,
                     index_name=INDEX_NAME,
+                    store_collection_with_index=True,
                     overwrite=False,
                 )
             self._indexed.add(pdf_id)
@@ -80,9 +81,9 @@ class _VisualIndex:
 
     def search(self, query: str, k: int = 3) -> list[dict]:
         with self._lock:
-            if self._model is None or not self._indexed:
+            if not self._indexed:
                 return []
-            results = self._model.search(query, k=k, return_base64_results=True)
+            results = self._get_model().search(query, k=k, return_base64_results=True)
         return [
             {
                 "score":    float(r.score),

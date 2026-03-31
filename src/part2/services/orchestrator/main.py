@@ -81,13 +81,13 @@ class Orchestrator:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def index_documents(self, pdf_dir: Path) -> None:
+    def index_documents(self, pdf_dir: Path, force: bool = False) -> None:
         pdfs = sorted(pdf_dir.glob("*.pdf"))
         if not pdfs:
             raise ValueError(f"No PDFs found in {pdf_dir.resolve()}")
 
         expected = {p.stem for p in pdfs}
-        cached   = self._already_indexed(expected)
+        cached   = set() if force else self._already_indexed(expected)
         to_index = expected - cached
 
         for pdf_id in cached:
@@ -134,11 +134,15 @@ def _cli() -> None:
         required=not os.environ.get("PDF_DIR"),
         help="Directory of PDFs to index (or set PDF_DIR env var)",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Re-index all PDFs even if already in Qdrant (use after wiping the visual index)",
+    )
     args = parser.parse_args()
 
     orch = Orchestrator()
     print(f"Indexing PDFs in {args.pdf_dir} …")
-    orch.index_documents(Path(args.pdf_dir))
+    orch.index_documents(Path(args.pdf_dir), force=args.force)
     print("Index ready.")
 
 

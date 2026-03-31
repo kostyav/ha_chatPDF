@@ -16,6 +16,8 @@ import os
 import sys
 import threading
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 import redis
 from openai import OpenAI
@@ -32,8 +34,47 @@ LLM_MODEL            = os.environ.get("LLM_MODEL",            "gemma3:4b")
 SIMILARITY_THRESHOLD = float(os.environ.get("SIMILARITY_THRESHOLD", "0.3"))
 TOP_K                = int(os.environ.get("TOP_K",             "3"))
 RETRIEVE_TIMEOUT     = int(os.environ.get("RETRIEVE_TIMEOUT",  "60"))
+RETRIEVAL_LOG        = os.environ.get("RETRIEVAL_LOG",         "/data/logs/retrieval_log.jsonl")
 
 NO_INFO_MSG = "The document does not contain information about this query."
+
+
+def _save_images(visual_hits: list, corr_id: str) -> list[str]:
+    """Decode base64 page images from visual hits and save them as PNG files.
+    Returns a list of saved file paths."""
+    import base64
+    img_dir = Path(RETRIEVAL_LOG).parent / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i, hit in enumerate(visual_hits):
+        b64 = hit.get("base64")
+        if not b64:
+            continue
+        page = hit.get("page_num", i)
+        doc  = hit.get("doc_id", "unknown")
+        path = img_dir / f"{corr_id[:8]}_doc{doc}_page{page}.png"
+        path.write_bytes(base64.b64decode(b64))
+        paths.append(str(path))
+    return paths
+
+
+def _append_log(question: str, result: dict) -> None:
+    """Append one JSON line to the retrieval log file."""
+    try:
+        log_path = Path(RETRIEVAL_LOG)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "query": question,
+            "answer": result.get("answer", ""),
+            "best_score": result["best_score"],
+            "chunks": result["retrieved_chunks"],
+            "images": result.get("images", []),
+        }
+        with log_path.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        log.warning("Failed to write retrieval log", exc_info=True)
 
 
 def query(question: str) -> dict:
@@ -83,41 +124,60 @@ def query(question: str) -> dict:
 
     r.delete(text_res_q, visual_res_q)
 
-    best_score = max(
-        [h["score"] for h in text_hits]
-        + [h["score"] for h in visual_hits]
-        + [0.0]
-    )
+    best_text_score = max([h["score"] for h in text_hits] + [0.0])
+    best_score = max([h["score"] for h in text_hits] + [h["score"] for h in visual_hits] + [0.0])
 
-    if best_score < SIMILARITY_THRESHOLD:
-        return {
+    # Gate on text score only — visual (ColQwen2 MaxSim) scores are 5-20+ regardless of relevance
+    if best_text_score < SIMILARITY_THRESHOLD:
+        result = {
             "answer":           NO_INFO_MSG,
             "retrieved_chunks": [],
             "visual_results":   [],
             "best_score":       best_score,
+            "images":           [],
         }
+        _append_log(question, result)
+        return result
 
-    text_ctx = "\n\n---\n\n".join(h["text"] for h in text_hits)
-    content: list[dict] = [
-        {"type": "text", "text": f"Context:\n{text_ctx}\n\nQuestion: {question}"}
+    # Build numbered text chunks with source labels
+    text_sections = "\n\n".join(
+        f"[Text {i+1} | pdf:{h['pdf_id']} | score:{h['score']:.3f}]\n{h['text']}"
+        for i, h in enumerate(text_hits)
+    )
+
+    system_msg = (
+        "You are a scientific document assistant. "
+        "Answer the user's question using ALL of the provided context: "
+        "text excerpts (which may include tables in Markdown), and page images "
+        "(which may contain figures, chemical schemes, and visual diagrams). "
+        "If the answer is visible in an image but not in the text, describe what you see. "
+        "Be specific and concise."
+    )
+
+    user_content: list[dict] = [
+        {"type": "text", "text": f"Text context:\n\n{text_sections}\n\nQuestion: {question}"},
     ]
-    for hit in visual_hits[:2]:
+    for hit in visual_hits:
         b64 = hit.get("base64")
         if b64:
-            content.append({
+            user_content.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:image/png;base64,{b64}"},
             })
 
     resp = llm.chat.completions.create(
         model=LLM_MODEL,
-        messages=[{"role": "user", "content": content}],
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user",   "content": user_content},
+        ],
         max_tokens=512,
     )
-    return {
+    images = _save_images(visual_hits, corr_id)
+    result = {
         "answer": resp.choices[0].message.content.strip(),
         "retrieved_chunks": [
-            {"score": h["score"], "text": h["text"][:300], "pdf_id": h["pdf_id"]}
+            {"score": h["score"], "text": h["text"], "pdf_id": h["pdf_id"]}
             for h in text_hits
         ],
         "visual_results": [
@@ -125,14 +185,19 @@ def query(question: str) -> dict:
             for h in visual_hits
         ],
         "best_score": best_score,
+        "images":     images,
     }
+    _append_log(question, result)
+    return result
 
 
 def _print_result(result: dict) -> None:
     print(f"Answer : {result['answer']}")
     print(f"Score  : {result['best_score']:.3f}")
     for c in result["retrieved_chunks"]:
-        print(f"  [{c['score']:.3f}] ({c['pdf_id']}) {c['text'][:120]} …")
+        print(f"  [{c['score']:.3f}] ({c['pdf_id']}) {c['text']}")
+    for path in result.get("images", []):
+        print(f"  [image] {path}")
     print()
 
 

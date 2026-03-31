@@ -68,7 +68,8 @@ src/part2/
 │       ├── Dockerfile       ← python:3.12-slim; no GPU required
 │       ├── requirements.txt
 │       ├── main.py          ← indexing pipeline coordinator (CMD of the service)
-│       └── query.py         ← standalone query client (run separately with -it)
+│       ├── query.py         ← standalone query client; logs every result to JSONL
+│       └── report.py        ← generates PDF report from retrieval_log.jsonl
 │
 ├── config/                  ← LLM engine configs (used by orchestrator env vars)
 │   ├── config.yaml          ← ACTIVE config
@@ -89,6 +90,7 @@ tests/part2/
 ├── test_config.py
 ├── test_parser.py
 ├── test_pipeline.py
+├── test_retrieval_log.py    ← log structure unit tests + integration log writer
 ├── test_configurations.py
 └── test_evaluate.py
 ```
@@ -209,7 +211,21 @@ question
 - **Query correlation:** each query gets a `uuid4` correlation ID; results are
   delivered to ephemeral per-correlation Redis lists (`res.text.<id>` /
   `res.visual.<id>`) and deleted after receipt.
+- **Retrieval log:** every query (pass or fail threshold) appends one JSON line
+  to `RETRIEVAL_LOG` (`/data/logs/retrieval_log.jsonl`).  Fields: `timestamp`,
+  `query`, `best_score`, `chunks` (full text), `images` (PNG file paths).
+- **Image saving:** base64 page images returned by the visual indexer are decoded
+  and written to `/data/logs/images/<corr_id>_doc<N>_page<N>.png`.
 - **Run with:** `docker compose run --rm -it orchestrator python query.py`
+
+### `report.py` (PDF report generator)
+
+- **Same image** as orchestrator
+- **Key deps:** `fpdf2>=2.7`
+- **Role:** reads `retrieval_log.jsonl`, renders one page per query (question,
+  metadata, text chunks with scores, inline page images), writes `report.pdf`
+  to the same directory as the log.
+- **Run with:** `docker compose run --rm orchestrator python report.py`
 
 ---
 
@@ -217,18 +233,19 @@ question
 
 Services are configured via environment variables in `docker-compose.yml`:
 
-| Variable              | Service       | Default                        |
-|-----------------------|---------------|--------------------------------|
-| `REDIS_URL`           | all           | `redis://redis:6379/0`         |
-| `DPI`                 | parser        | `300`                          |
-| `EMBEDDING_MODEL`     | text_indexer  | `all-MiniLM-L6-v2`             |
-| `CHUNK_MAX_CHARS`     | text_indexer  | `800`                          |
-| `COLQWEN_MODEL`       | visual_indexer| `vidore/colqwen2-v0.1`         |
-| `LLM_BASE_URL`        | orchestrator  | `http://ollama:11434/v1`       |
-| `LLM_MODEL`           | orchestrator  | `gemma3:4b`                    |
-| `SIMILARITY_THRESHOLD`| orchestrator  | `0.3`                          |
-| `TOP_K`               | orchestrator  | `3`                            |
-| `RETRIEVE_TIMEOUT`    | orchestrator  | `60` (seconds)                 |
+| Variable              | Service        | Default                           |
+|-----------------------|----------------|-----------------------------------|
+| `REDIS_URL`           | all            | `redis://redis:6379/0`            |
+| `DPI`                 | parser         | `300`                             |
+| `EMBEDDING_MODEL`     | text_indexer   | `all-MiniLM-L6-v2`                |
+| `CHUNK_MAX_CHARS`     | text_indexer   | `800`                             |
+| `COLQWEN_MODEL`       | visual_indexer | `vidore/colqwen2-v0.1`            |
+| `LLM_BASE_URL`        | orchestrator   | `http://ollama:11434/v1`          |
+| `LLM_MODEL`           | orchestrator   | `gemma3:4b`                       |
+| `SIMILARITY_THRESHOLD`| orchestrator   | `0.3`                             |
+| `TOP_K`               | orchestrator   | `3`                               |
+| `RETRIEVE_TIMEOUT`    | orchestrator   | `60` (seconds)                    |
+| `RETRIEVAL_LOG`       | query.py       | `/data/logs/retrieval_log.jsonl`  |
 
 ---
 
@@ -249,39 +266,51 @@ GPU usage stays around 4–5 GB on a single T4.
 
 ## How to Run
 
-### Prerequisites
+### 1. Configure the LLM engine
 
-Per-engine configs are in `src/part2/config/`.
+Edit `src/part2/config/config.yaml`:
 
-### 3. Pull the Ollama model
+```yaml
+engine: ollama          # ollama | llamacpp | vllm
+model: gemma3:4b
+quantization: q4_K_M
+embedding_model: sentence-transformers/all-MiniLM-L6-v2
+```
+
+### 2. Pull the Ollama model
 
 ```bash
-# Start Ollama, then pull the model into the running container
-docker compose -f src/part2/docker-compose.yml up -d ollama
-docker compose -f src/part2/docker-compose.yml exec ollama ollama pull gemma3:4b
+docker compose up -d ollama
+docker compose exec ollama ollama pull gemma3:4b
+```
 
-# Copy N or 2  PDFs into the shared volume. Do not move all 10: it takes time on weak machine
+### 3. Copy PDFs into the shared volume
+
+```bash
 docker volume create rag-part2_pdf-data
-docker run --rm -v rag-part2_pdf-data:/data/pdfs \
+docker run --rm \
+  -v rag-part2_pdf-data:/data/pdfs \
   -v $(pwd)/src/part2/example_data:/src:ro \
   alpine sh -c "ls /src/*.pdf | head -2 | xargs -I{} cp -v {} /data/pdfs/"
 ```
 
-You can later clean the files with: docker run --rm -v rag-part2_pdf-data:/data/pdfs
+> Start with 2 PDFs on a weak machine — indexing all 10 takes significant time.
 
-### Start all services
+To reset: `docker run --rm -v rag-part2_pdf-data:/data/pdfs alpine rm -rf /data/pdfs/*.pdf`
+
+### 4. Start all services
 
 ```bash
 cd src/part2
 docker compose up --build
 ```
 
-### Run a query
+The orchestrator indexes all PDFs and exits.  All other services stay running.
 
-`main.py` handles indexing only. Use `query.py` for querying:
+### 5. Run queries
 
 ```bash
-# Interactive REPL (requires -it for stdin)
+# Interactive REPL
 docker compose run --rm -it orchestrator python query.py
 
 # Single question
@@ -289,10 +318,27 @@ docker compose run --rm orchestrator \
   python query.py --question "Which section describes Fig. 4?"
 ```
 
-### Switch LLM backend
+Results are printed to stdout and appended to `retrieval_log.jsonl`.
+Retrieved page images are saved to `/data/logs/images/`.
 
-Override `LLM_BASE_URL` and `LLM_MODEL` in `docker-compose.yml` or pass them
-as environment overrides:
+### 6. Generate the PDF report
+
+```bash
+docker compose run --rm orchestrator python report.py
+```
+
+Reads `retrieval_log.jsonl`, writes `report.pdf` to the same directory.
+
+Copy outputs to the host:
+
+```bash
+docker run --rm \
+  -v rag-part2_query-logs:/data/logs \
+  -v $(pwd):/out \
+  alpine sh -c "cp /data/logs/report.pdf /out/"
+```
+
+### Switch LLM backend
 
 ```bash
 LLM_BASE_URL=http://vllm:8000/v1 LLM_MODEL=google/gemma-3-4b-it \
@@ -301,11 +347,56 @@ LLM_BASE_URL=http://vllm:8000/v1 LLM_MODEL=google/gemma-3-4b-it \
 
 ---
 
+## Retrieval Log & PDF Report
+
+### Log format (`retrieval_log.jsonl`)
+
+One JSON line per query, appended by `query.py`:
+
+```json
+{
+  "timestamp": "2026-03-31T11:11:38Z",
+  "query": "Which section describes Fig. 4?",
+  "best_score": 0.240,
+  "chunks": [
+    {"score": 0.240, "pdf_id": "23870758", "text": "…full chunk text…"}
+  ],
+  "images": ["/data/logs/images/f7c44538_doc0_page3.png"]
+}
+```
+
+Queries that fall below the similarity threshold are still logged with
+`chunks: []` and `images: []`.
+
+### Image files
+
+Base64 page images returned by the visual indexer are decoded and saved as PNGs:
+
+```
+/data/logs/images/<corr_id[:8]>_doc<doc_id>_page<page_num>.png
+```
+
+### PDF report
+
+`report.py` reads the full log and renders one page per query:
+
+- Query text, timestamp, best score
+- Retrieved text chunks (score + pdf\_id + full text, grey background)
+- Retrieved page images inline
+
+```bash
+docker compose run --rm orchestrator python report.py
+# output: /data/logs/report.pdf
+```
+
+Both the log and images live in the `query-logs` Docker volume (`/data/logs`).
+
+---
+
 ## Single-process mode (no Docker)
 
-The original `rag/` module remains for unit tests and local development without
-Docker.  It has the same chunking logic as `text_indexer` and the same Byaldi
-wrapper as `visual_indexer`, but runs everything in one process.
+The `rag/` module runs everything in one process — useful for development and
+unit tests without the full service stack.
 
 ```bash
 cd /teamspace/studios/this_studio

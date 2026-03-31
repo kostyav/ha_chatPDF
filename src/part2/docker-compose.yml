@@ -14,6 +14,7 @@ volumes:
   byaldi-index:
   qdrant-data:
   redis-data:
+  query-logs:
 
 networks:
   rag-net:
@@ -145,8 +146,10 @@ services:
       TOP_K: "3"
       RETRIEVE_TIMEOUT: "60"
       PDF_DIR: /data/pdfs
+      RETRIEVAL_LOG: /data/logs/retrieval_log.jsonl
     volumes:
       - pdf-data:/data/pdfs:ro
+      - query-logs:/data/logs
     networks: [rag-net]
     stdin_open: true
     tty: true
