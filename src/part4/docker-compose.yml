@@ -1,0 +1,22 @@
+name: rag-part4
+
+networks:
+  rag-net:
+    external: true
+    name: rag-part2_rag-net
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: src/part4/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: gemma3:4b
+      SIMILARITY_THRESHOLD: "0.3"
+      TOP_K: "3"
+      RETRIEVE_TIMEOUT: "60"
+    networks: [rag-net]
