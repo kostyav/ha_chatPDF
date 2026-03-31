@@ -1,0 +1,23 @@
+name: rag-part3
+
+networks:
+  # Join the already-running Part 2 network so we can reach redis + ollama
+  rag-net:
+    external: true
+    name: rag-part2_rag-net
+
+services:
+  agent:
+    build:
+      context: ../..        # repo root — Dockerfile COPYs from here
+      dockerfile: src/part3/Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: gemma3:4b
+      SIMILARITY_THRESHOLD: "0.3"
+      TOP_K: "3"
+      RETRIEVE_TIMEOUT: "60"
+    networks: [rag-net]
+    stdin_open: true
+    tty: true

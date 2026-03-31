@@ -1,5 +1,6 @@
 # Runtime
 openai>=1.0
+redis>=5.0
 pyyaml>=6.0
 huggingface_hub>=0.20
 transformers
