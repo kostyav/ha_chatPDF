@@ -1,0 +1,64 @@
+# One-shot Job: indexes all PDFs in /data/pdfs then exits.
+# Run after all queue-consumer Deployments are Ready.
+#
+# Usage:
+#   kubectl apply -f k8s/orchestrator/indexer-job.yaml -n rag-system
+#   kubectl logs -f job/orchestrator-indexer -n rag-system
+#
+# To force re-index (delete old Job first):
+#   kubectl delete job orchestrator-indexer -n rag-system
+#   kubectl apply -f k8s/orchestrator/indexer-job.yaml -n rag-system --env FORCE=--force
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orchestrator-indexer
+  namespace: rag-system
+  labels:
+    app: orchestrator
+    role: indexer
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+        role: indexer
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-redis
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z redis 6379; do echo waiting for redis; sleep 2; done"]
+        - name: wait-for-qdrant
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z qdrant 6333; do echo waiting for qdrant; sleep 2; done"]
+      containers:
+        - name: orchestrator
+          image: rag/orchestrator:latest
+          imagePullPolicy: Never
+          command: ["python", "main.py"]
+          # Append --force to re-index already-seen PDFs
+          # args: ["--force"]
+          envFrom:
+            - configMapRef:
+                name: rag-config
+          volumeMounts:
+            - name: pdf-data
+              mountPath: /data/pdfs
+              readOnly: true
+            - name: query-logs
+              mountPath: /data/logs
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: pdf-data
+          persistentVolumeClaim:
+            claimName: pdf-data
+        - name: query-logs
+          persistentVolumeClaim:
+            claimName: query-logs

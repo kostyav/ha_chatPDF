@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: rag-system
+
+resources:
+  # Namespace first
+  - namespace.yaml
+
+  # Shared configuration
+  - configmap.yaml
+  - secret.yaml
+
+  # Persistent storage
+  - pvc/redis-pvc.yaml
+  - pvc/qdrant-pvc.yaml
+  - pvc/ollama-pvc.yaml
+  - pvc/pdf-data-pvc.yaml
+  - pvc/parsed-docs-pvc.yaml
+  - pvc/byaldi-index-pvc.yaml
+  - pvc/query-logs-pvc.yaml
+
+  # Infrastructure services
+  - redis/deployment.yaml
+  - redis/service.yaml
+  - qdrant/deployment.yaml
+  - qdrant/service.yaml
+  - ollama/deployment.yaml
+  - ollama/service.yaml
+
+  # RAG microservices (queue consumers — long-running)
+  - parser/deployment.yaml
+  - text-indexer/deployment.yaml
+  - visual-indexer/deployment.yaml
+
+  # API (FastAPI + SSE)
+  - api/deployment.yaml
+  - api/service.yaml
+
+  # Jobs (run manually after services are ready)
+  # - orchestrator/indexer-job.yaml
+  # - orchestrator/query-job.yaml

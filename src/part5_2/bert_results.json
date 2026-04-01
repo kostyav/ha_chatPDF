@@ -1,0 +1,70 @@
+{
+  "avg_bert_f1": 0.8645332455635071,
+  "results": [
+    {
+      "q": "Schema of ester from ethyl chloroformate.",
+      "answer": "Based on the provided text, the synthesis of \u03b2-keto esters from ethyl chloroformate involves reacting ethyl chloroformate with a base, followed by the addition of hydrazine or its derivatives. The researchers optimized this process using LiHMDS in toluene and ethanol, resulting in a relatively complete reaction after 4-5 hours, as evidenced by NMR data and LC-MS analysis.",
+      "ref": "Ethyl chloroformate reacts with a ketone in the presence of a base to form a beta-keto ester intermediate. Addition of hydrazine or its derivatives to this intermediate yields pyrazolone products in situ.",
+      "statuses": [
+        "Routing question\u2026",
+        "Retrieving from documents\u2026",
+        "Synthesizing answer\u2026"
+      ],
+      "bert_P": 0.8570828437805176,
+      "bert_R": 0.8948360681533813,
+      "bert_F1": 0.8755526542663574
+    },
+    {
+      "q": "Provide the numeric values and description of the antimicrobial activity of esters.",
+      "answer": "Based on the provided data, esters (Compounds 2 & 4) showed **good activity towards the fungal strains tested (A. flavus, P. marneffei, and T. mentagrophytes).**",
+      "ref": "The antimicrobial activity of the ester compounds is described qualitatively as very good, moderate to good, moderate, or poor. No specific numeric MIC values are reported in the available documents.",
+      "statuses": [
+        "Routing question\u2026",
+        "Retrieving from documents\u2026",
+        "Synthesizing answer\u2026"
+      ],
+      "bert_P": 0.8130122423171997,
+      "bert_R": 0.8500066995620728,
+      "bert_F1": 0.8310979604721069
+    },
+    {
+      "q": "Short description of bhutan",
+      "answer": "Based on the provided text, Bhutan was the focus of a 1988 WHO report analyzing its smallpox eradication program. The report highlighted the program\u2019s limited scope, challenges related to data accuracy and access, and Bhutan\u2019s involvement in a contested campaign with the WHO and Indian authorities in the 1960s and 1970s.",
+      "ref": "Bhutan is a landlocked kingdom in the Eastern Himalayas, bordered by India and China. It is known for its Gross National Happiness philosophy, Buddhist culture, and pristine mountain landscapes.",
+      "statuses": [
+        "Routing question\u2026",
+        "Retrieving from documents\u2026",
+        "Synthesizing answer\u2026"
+      ],
+      "bert_P": 0.8438870906829834,
+      "bert_R": 0.8449530601501465,
+      "bert_F1": 0.8444197773933411
+    },
+    {
+      "q": "Describe the smallpox vaccination program",
+      "answer": "The smallpox vaccination program gained momentum in the late 1960s, spearheaded by the World Health Organization (WHO) at its headquarters in Geneva. It started with Claude Smith\u2019s team vaccinating the population of Bhutan in 1966, followed by the addition of healthcare cadres and widespread vaccination campaigns using a bifurcated needle. The program involved data collection and analysis from regions like Assam and West Bengal, India, and was supported by the WHO and WHO SEARO. It gained traction after successes in Western Africa and mobilized international political and financial support.",
+      "ref": "The WHO-led smallpox eradication programme gained momentum in the late 1960s. In Bhutan, Claude Smith led vaccination efforts from 1966, integrating them into new healthcare structures. Nineteen vaccinators were added in 1964 and five more in December 1965. Mass campaigns used a fixed-rigid needle technique. WHO SEARO reported on the Bhutanese programme in 1977.",
+      "statuses": [
+        "Routing question\u2026",
+        "Retrieving from documents\u2026",
+        "Synthesizing answer\u2026"
+      ],
+      "bert_P": 0.8822933435440063,
+      "bert_R": 0.9063877463340759,
+      "bert_F1": 0.8941783308982849
+    },
+    {
+      "q": "How the LLM spaceforce can help brazilian government to reduce the public debt",
+      "answer": "I understand you're asking about how Large Language Models (LLMs) \u2013 often referred to as an \u201cLLM spaceforce\u201d \u2013 could potentially assist the Brazilian government in reducing public debt. However, the document I have access to currently does not contain information to answer this question. \n\nTherefore, I cannot provide a specific response.",
+      "ref": "The documents do not contain information about LLM spaceforce or Brazilian public debt reduction strategies.",
+      "statuses": [
+        "Routing question\u2026",
+        "Retrieving from documents\u2026",
+        "Synthesizing answer\u2026"
+      ],
+      "bert_P": 0.8475417494773865,
+      "bert_R": 0.9094771146774292,
+      "bert_F1": 0.8774178624153137
+    }
+  ]
+}

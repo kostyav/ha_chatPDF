@@ -20,9 +20,11 @@ import os
 import sys
 import threading
 import uuid
+from typing import Iterator, Literal
 
 import redis
 from openai import OpenAI
+from pydantic import BaseModel, ValidationError
 
 import src.part2.shared.schemas as schemas
 
@@ -34,6 +36,47 @@ TOP_K                = int(os.environ.get("TOP_K",             "3"))
 RETRIEVE_TIMEOUT     = int(os.environ.get("RETRIEVE_TIMEOUT",  "60"))
 
 NO_INFO_MSG = "The document does not contain information about this query."
+
+
+# ── Structured output schema ───────────────────────────────────────────────────
+
+class QueryAnalysis(BaseModel):
+    """Structured extraction from a user query."""
+    topics: list[str]
+    sentiment: Literal["positive", "negative", "neutral", "mixed"]
+
+
+_ANALYSIS_PROMPT = (
+    "Extract from the user question:\n"
+    '1. "topics": list of key subjects (max 5 short phrases, e.g. ["neural networks", "training loss"])\n'
+    '2. "sentiment": one of "positive", "negative", "neutral", "mixed"\n'
+    "Reply with valid JSON only. No markdown, no extra text."
+)
+
+
+def analyze_query(question: str) -> QueryAnalysis:
+    """Call the LLM to extract Topics and Sentiment as strict JSON, validated by Pydantic."""
+    llm = OpenAI(base_url=LLM_BASE_URL, api_key="none")
+    resp = llm.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[
+            {"role": "system", "content": _ANALYSIS_PROMPT},
+            {"role": "user",   "content": question},
+        ],
+        response_format={"type": "json_object"},
+        max_tokens=128,
+    )
+    raw = resp.choices[0].message.content.strip()
+    try:
+        return QueryAnalysis.model_validate_json(raw)
+    except ValidationError:
+        # Coerce partial data so the pipeline never hard-crashes on this step
+        data = json.loads(raw)
+        topics = data.get("topics", [])
+        sentiment = data.get("sentiment", "neutral")
+        if sentiment not in ("positive", "negative", "neutral", "mixed"):
+            sentiment = "neutral"
+        return QueryAnalysis(topics=topics, sentiment=sentiment)
 
 
 # ── Tool implementation ────────────────────────────────────────────────────────
@@ -160,6 +203,37 @@ def run_agent(question: str) -> str:
     ).choices[0].message.content.strip()
 
 
+# ── Streaming answer ──────────────────────────────────────────────────────────
+
+def stream_answer(question: str, context: str | None = None) -> Iterator[str]:
+    """Stream the final LLM answer token-by-token.
+
+    Yields individual text chunks as they arrive from the model.
+    If *context* is provided (RAG result), it is prepended to the prompt.
+    """
+    llm = OpenAI(base_url=LLM_BASE_URL, api_key="none")
+
+    if context:
+        system = "You are a helpful assistant. Answer the question using the provided context."
+        user_text = f"Context:\n{context}\n\nQuestion: {question}"
+    else:
+        system = "You are a helpful assistant."
+        user_text = question
+
+    for chunk in llm.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user_text},
+        ],
+        max_tokens=512,
+        stream=True,
+    ):
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _cli() -> None:
@@ -169,7 +243,35 @@ def _cli() -> None:
     args = ap.parse_args()
 
     def _ask(q: str) -> None:
-        print(f"\nAnswer: {run_agent(q)}\n")
+        # 1. Structured extraction — emitted as JSON before the stream starts
+        analysis = analyze_query(q)
+        print(f"\nAnalysis: {analysis.model_dump_json()}")
+
+        # 2. Route
+        llm = OpenAI(base_url=LLM_BASE_URL, api_key="none")
+        route = llm.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": _ROUTER_PROMPT},
+                {"role": "user",   "content": q},
+            ],
+            max_tokens=5,
+        ).choices[0].message.content.strip().upper()
+        needs_rag = route.startswith("YES")
+        _trace(f"router decision: {route!r} → {'rag_query' if needs_rag else 'direct answer'}")
+
+        context: str | None = None
+        if needs_rag:
+            context = rag_query(q)
+            _trace("streaming final answer from RAG context")
+        else:
+            _trace("streaming direct answer (no retrieval)")
+
+        # 3. Stream the answer — structured JSON was already printed above
+        print("Answer: ", end="", flush=True)
+        for token in stream_answer(q, context=context):
+            print(token, end="", flush=True)
+        print("\n")
 
     if args.question:
         _ask(args.question)

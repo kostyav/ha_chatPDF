@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: rag-system
+  labels:
+    app: ollama
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      # initContainer: pulls the model into the shared ollama-data PVC on
+      # first start. On subsequent starts the model is already on disk — pull
+      # is a no-op.
+      initContainers:
+        - name: pull-model
+          image: ollama/ollama:latest
+          command: ["sh", "-c", "ollama serve & sleep 5 && ollama pull gemma3:4b && pkill ollama"]
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "500m"
+            limits:
+              memory: "8Gi"
+              cpu: "2000m"
+          # GPU: uncomment when minikube is started with --gpus all
+          # limits:
+          #   nvidia.com/gpu: "1"
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "500m"
+            limits:
+              memory: "8Gi"
+              cpu: "2000m"
+          # GPU: uncomment when minikube is started with --gpus all
+          # limits:
+          #   nvidia.com/gpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 12
+      volumes:
+        - name: ollama-data
+          persistentVolumeClaim:
+            claimName: ollama-data

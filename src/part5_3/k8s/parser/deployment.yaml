@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parser
+  namespace: rag-system
+  labels:
+    app: parser
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: parser
+  template:
+    metadata:
+      labels:
+        app: parser
+    spec:
+      # Wait for Redis to be ready before starting
+      initContainers:
+        - name: wait-for-redis
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z redis 6379; do echo waiting for redis; sleep 2; done"]
+      containers:
+        - name: parser
+          image: rag/parser:latest
+          imagePullPolicy: Never   # built locally into minikube
+          envFrom:
+            - configMapRef:
+                name: rag-config
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HUGGING_FACE_HUB_TOKEN
+                  optional: true
+          volumeMounts:
+            - name: pdf-data
+              mountPath: /data/pdfs
+              readOnly: true
+            - name: parsed-docs
+              mountPath: /data/parsed
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "6Gi"
+              cpu: "2000m"
+          # GPU: Docling layout model benefits from GPU. Uncomment when available:
+          # limits:
+          #   nvidia.com/gpu: "1"
+      volumes:
+        - name: pdf-data
+          persistentVolumeClaim:
+            claimName: pdf-data
+        - name: parsed-docs
+          persistentVolumeClaim:
+            claimName: parsed-docs

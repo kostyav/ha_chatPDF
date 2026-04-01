@@ -1,0 +1,50 @@
+# One-shot Job for running a non-interactive query.
+# For an interactive REPL, exec into the pod instead (see README).
+#
+# Usage:
+#   # Set your question in the args below, then:
+#   kubectl apply -f k8s/orchestrator/query-job.yaml -n rag-system
+#   kubectl logs -f job/orchestrator-query -n rag-system
+#
+#   # Cleanup:
+#   kubectl delete job orchestrator-query -n rag-system
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orchestrator-query
+  namespace: rag-system
+  labels:
+    app: orchestrator
+    role: query
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+        role: query
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: orchestrator
+          image: rag/orchestrator:latest
+          imagePullPolicy: Never
+          command: ["python", "query.py"]
+          args: ["--question", "What is the status of smallpox in bhutan"]   # override as needed
+          envFrom:
+            - configMapRef:
+                name: rag-config
+          volumeMounts:
+            - name: query-logs
+              mountPath: /data/logs
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: query-logs
+          persistentVolumeClaim:
+            claimName: query-logs

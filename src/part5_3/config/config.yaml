@@ -1,0 +1,39 @@
+# RAG system configuration — Kubernetes / minikube deployment
+#
+# Service hostnames resolve via Kubernetes DNS within the rag-system namespace.
+# Format: <service-name>.<namespace>.svc.cluster.local  (or just <service-name>
+# when accessed from within the same namespace, which is the case here).
+
+engine: ollama
+model: gemma3:4b
+quantization: q4_K_M
+
+# LLM endpoint — maps to the ollama K8s Service (ClusterIP, port 11434)
+llm_base_url: "http://ollama:11434/v1"
+
+# Embedding model (CPU, no external service needed)
+embedding_model: sentence-transformers/all-MiniLM-L6-v2
+
+# Visual retrieval model (served by visual-indexer Deployment)
+colqwen_model: vidore/colqwen2-v0.1
+
+# Vector DB — maps to the qdrant K8s Service (ClusterIP, port 6333)
+qdrant:
+  host: qdrant          # K8s service name
+  port: 6333
+
+# Message queue — maps to the redis K8s Service (ClusterIP, port 6379)
+redis:
+  url: "redis://redis:6379/0"
+
+retriever:
+  top_k: 3
+  similarity_threshold: 0.3
+  index_dir: /data/byaldi_index   # PVC mount path inside pod
+
+parser:
+  dpi: 300
+  output_dir: /data/parsed        # PVC mount path inside pod
+
+logging:
+  retrieval_log: /data/logs/retrieval_log.jsonl

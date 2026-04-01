@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+  namespace: rag-system
+data:
+  # Redis
+  REDIS_URL: "redis://redis:6379/0"
+
+  # Qdrant — service name resolves within rag-system namespace
+  QDRANT_HOST: "qdrant"
+  QDRANT_PORT: "6333"
+
+  # Text indexer
+  EMBEDDING_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
+  CHUNK_MAX_CHARS: "800"
+
+  # Visual indexer
+  COLQWEN_MODEL: "vidore/colqwen2-v0.1"
+  INDEX_DIR: "/data/byaldi_index"
+
+  # LLM — Ollama service name resolves within rag-system namespace
+  LLM_BASE_URL: "http://ollama:11434/v1"
+  LLM_MODEL: "gemma3:4b"
+
+  # Retrieval / generation
+  SIMILARITY_THRESHOLD: "0.3"
+  TOP_K: "3"
+  RETRIEVE_TIMEOUT: "60"
+
+  # File paths (must match PVC mount points)
+  PDF_DIR: "/data/pdfs"
+  PARSED_DIR: "/data/parsed"
+  RETRIEVAL_LOG: "/data/logs/retrieval_log.jsonl"
+  DPI: "300"

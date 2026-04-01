@@ -8,6 +8,15 @@
 .kaggle/
 .byaldi/
 .docker_images/
+.kube
+.minikube
+
+*.pem
+*.lock
+minikube-linux-amd64
+kubectl
+
+secret.*
 
 models/
 
